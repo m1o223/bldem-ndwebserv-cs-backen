@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: bluemind-web-service-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22.23.3
+      - key: ALLOWED_ORIGINS
+        sync: false
