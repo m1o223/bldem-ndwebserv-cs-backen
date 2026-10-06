@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: bluemind-web-service-api
+    name: bluemind-web-service-backend
     runtime: node
     plan: free
     buildCommand: npm ci
