@@ -24,3 +24,11 @@ services:
         value: admin@xn--bluemndwebservice-gvc.com
       - key: EMAIL_FROM
         value: BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD_HASH
+        sync: false
+      - key: ADMIN_SESSION_SECRET
+        sync: false
+      - key: ENABLE_ADMIN_NOTIFICATION_EMAILS
+        value: "false"

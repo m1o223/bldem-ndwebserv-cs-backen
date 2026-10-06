@@ -66,6 +66,21 @@ export function buildQuoteEmail(quote) {
   };
 }
 
+export function buildOrderReadyEmail(order) {
+  return {
+    subject: `Your BlueMind Web Service order ${order.orderNumber} is ready`,
+    text: [
+      `Hello ${order.customerName || "there"},`,
+      "",
+      `Your BlueMind Web Service order ${order.orderNumber} is ready.`,
+      `Project: ${order.projectType || "Not provided"}`,
+      `Service: ${order.service || "Not provided"}`,
+      "",
+      "This notification was generated from the BlueMind admin order system.",
+    ].join("\n"),
+  };
+}
+
 export function buildFormMailOptions(config, route, doc) {
   const email = route === "/api/contact" ? buildContactEmail(doc) : buildQuoteEmail(doc);
   return {
@@ -88,5 +103,31 @@ export async function sendFormNotification(env, route, doc) {
   if (result.error) throw new Error(result.error.message || "Resend email send failed");
   console.log("Email notification sent", { route, provider: "resend", id: result.data?.id ? "present" : "missing" });
 
+  return { sent: true };
+}
+
+export async function sendOrderReadyNotification(env, order) {
+  if (env.ENABLE_ADMIN_NOTIFICATION_EMAILS !== "true") {
+    console.warn("Order ready email skipped: admin notifications are disabled");
+    return { sent: false, reason: "disabled" };
+  }
+
+  const config = getEmailConfig(env);
+  if (!config) {
+    console.warn("Order ready email skipped: Resend is not configured");
+    return { sent: false, reason: "not_configured" };
+  }
+
+  const email = buildOrderReadyEmail(order);
+  const result = await getResendClient(config.apiKey).emails.send({
+    from: config.from,
+    to: order.email,
+    replyTo: config.to,
+    subject: email.subject,
+    text: email.text,
+  });
+
+  if (result.error) throw new Error(result.error.message || "Resend email send failed");
+  console.log("Order ready email sent", { provider: "resend", orderNumber: order.orderNumber, id: result.data?.id ? "present" : "missing" });
   return { sent: true };
 }

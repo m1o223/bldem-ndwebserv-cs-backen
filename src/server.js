@@ -1,7 +1,21 @@
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
+import {
+  buildAdminLogoutCookie,
+  buildAdminSessionCookie,
+  createAdminSession,
+  isAdminRequest,
+  verifyAdminCredentials,
+} from "./adminAuth.js";
 import { getDatabase } from "./database.js";
-import { sendFormNotification } from "./email.js";
+import { sendFormNotification, sendOrderReadyNotification } from "./email.js";
+import {
+  buildOrderSearchQuery,
+  ensureOrderIndexes,
+  normalizeOrderNumber,
+  serializeOrder,
+  validateOrderStatus,
+} from "./orders.js";
 import { validateContactSubmission, validateQuoteSubmission, ValidationError } from "./validation.js";
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -70,9 +84,10 @@ function readJsonBody(req) {
 
 async function ensureCollections(db) {
   const existing = new Set((await db.listCollections({}, { nameOnly: true }).toArray()).map(collection => collection.name));
-  for (const name of ["contacts", "quoteRequests", "clients", "projects"]) {
+  for (const name of ["contacts", "quoteRequests", "clients", "projects", "orders", "adminEvents"]) {
     if (!existing.has(name)) await db.createCollection(name);
   }
+  await ensureOrderIndexes(db);
 }
 
 async function handleFormRoute(req, res, env, route) {
@@ -102,6 +117,116 @@ async function handleFormRoute(req, res, env, route) {
   });
 }
 
+async function handleAdminLogin(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+
+  const body = await readJsonBody(req);
+  const ok = await verifyAdminCredentials(env, body?.email, body?.password);
+  if (!ok) return json(res, 401, { success: false, error: "Invalid email or password." });
+
+  const token = createAdminSession(env);
+  res.setHeader("Set-Cookie", buildAdminSessionCookie(token, env));
+  return json(res, 200, { success: true, admin: { email: String(env.ADMIN_EMAIL || "").trim().toLowerCase() } });
+}
+
+function handleAdminLogout(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  res.setHeader("Set-Cookie", buildAdminLogoutCookie(env));
+  return json(res, 200, { success: true });
+}
+
+function requireAdmin(req, res, env) {
+  if (isAdminRequest(req, env)) return true;
+  return json(res, 401, { success: false, error: "Authentication required." });
+}
+
+async function listAdminOrders(req, res, env, url) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!requireAdmin(req, res, env)) return;
+
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const search = url.searchParams.get("search") || "";
+  const orders = await db.collection("orders")
+    .find(buildOrderSearchQuery(search))
+    .sort({ createdAt: -1, orderNumber: -1 })
+    .limit(100)
+    .toArray();
+
+  return json(res, 200, { success: true, orders: orders.map(serializeOrder) });
+}
+
+async function getAdminOrder(req, res, env, orderNumber) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!requireAdmin(req, res, env)) return;
+
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const order = await db.collection("orders").findOne({ orderNumber: normalizeOrderNumber(orderNumber) });
+  if (!order) return json(res, 404, { success: false, error: "Order not found." });
+  return json(res, 200, { success: true, order: serializeOrder(order) });
+}
+
+async function updateAdminOrderStatus(req, res, env, orderNumber) {
+  if (req.method !== "PATCH") {
+    res.setHeader("Allow", "PATCH, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+  if (!requireAdmin(req, res, env)) return;
+
+  const body = await readJsonBody(req);
+  const nextStatus = validateOrderStatus(body?.projectStatus);
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const collection = db.collection("orders");
+  const current = await collection.findOne({ orderNumber: normalizeOrderNumber(orderNumber) });
+  if (!current) return json(res, 404, { success: false, error: "Order not found." });
+
+  const updatedAt = new Date();
+  await collection.updateOne(
+    { _id: current._id },
+    { $set: { projectStatus: nextStatus, updatedAt } },
+  );
+  const updated = await collection.findOne({ _id: current._id });
+
+  let notification = { sent: false, reason: "not_applicable" };
+  if (current.projectStatus !== "Ready" && nextStatus === "Ready") {
+    try {
+      notification = await sendOrderReadyNotification(env, updated);
+      await db.collection("adminEvents").insertOne({
+        type: "order_ready",
+        orderNumber: updated.orderNumber,
+        email: updated.email,
+        notification,
+        createdAt: new Date(),
+      });
+    } catch (error) {
+      notification = { sent: false, reason: "failed" };
+      console.error("Order ready notification failed", { orderNumber: updated.orderNumber, message: error?.message });
+    }
+  }
+
+  return json(res, 200, { success: true, order: serializeOrder(updated), notification });
+}
+
 export function createHealthServer(env = process.env) {
   const allowed = parseAllowedOrigins(env);
   const checkRateLimit = createRateLimiter();
@@ -120,27 +245,55 @@ export function createHealthServer(env = process.env) {
     const url = new URL(req.url || "/", "http://localhost");
     const route = url.pathname;
     const isFormRoute = route === "/api/contact" || route === "/api/quote";
-    const allowedMethods = isFormRoute ? "POST, OPTIONS" : "GET, OPTIONS";
+    const isAdminRoute = route.startsWith("/api/admin/");
+    const adminOrderMatch = route.match(/^\/api\/admin\/orders\/([^/]+)$/);
+    const allowedMethods = route === "/api/admin/orders" || adminOrderMatch
+      ? "GET, PATCH, OPTIONS"
+      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      if (isAdminRoute) res.setHeader("Access-Control-Allow-Credentials", "true");
       res.writeHead(204);
       return res.end();
     }
 
-    if (route === "/api/health") {
-      if (req.method !== "GET") {
-        res.setHeader("Allow", "GET, OPTIONS");
-        return json(res, 405, { success: false, error: "Method not allowed" });
-      }
-      return json(res, 200, { success: true, service: "BlueMind Web Service API", status: "healthy" });
-    }
-
-    if (!isFormRoute) return json(res, 404, { success: false, error: "Not found" });
-    if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+    if (isAdminRoute) res.setHeader("Access-Control-Allow-Credentials", "true");
 
     try {
+      if (route === "/api/health") {
+        if (req.method !== "GET") {
+          res.setHeader("Allow", "GET, OPTIONS");
+          return json(res, 405, { success: false, error: "Method not allowed" });
+        }
+        return json(res, 200, { success: true, service: "BlueMind Web Service API", status: "healthy" });
+      }
+
+      if (route === "/api/admin/login") {
+        if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+        return await handleAdminLogin(req, res, env);
+      }
+
+      if (route === "/api/admin/logout") return handleAdminLogout(req, res, env);
+      if (route === "/api/admin/session") {
+        if (req.method !== "GET") {
+          res.setHeader("Allow", "GET, OPTIONS");
+          return json(res, 405, { success: false, error: "Method not allowed" });
+        }
+        return json(res, 200, { success: true, authenticated: isAdminRequest(req, env) });
+      }
+      if (route === "/api/admin/orders") return await listAdminOrders(req, res, env, url);
+      if (adminOrderMatch) {
+        const orderNumber = decodeURIComponent(adminOrderMatch[1]);
+        return req.method === "PATCH"
+          ? await updateAdminOrderStatus(req, res, env, orderNumber)
+          : await getAdminOrder(req, res, env, orderNumber);
+      }
+
+      if (!isFormRoute) return json(res, 404, { success: false, error: "Not found" });
+      if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+
       return await handleFormRoute(req, res, env, route);
     } catch (error) {
       if (error instanceof ValidationError) return json(res, 400, { success: false, error: "Please check the form and try again.", fields: error.fields });
