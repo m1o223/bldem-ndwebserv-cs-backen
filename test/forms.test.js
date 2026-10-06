@@ -99,10 +99,10 @@ test("email notifications include inquiry details", () => {
   assert.match(quoteEmail.text, /Source: BlueMind Web Service Quote Form/);
 
   const options = buildFormMailOptions({
-    from: "admin@xn--bluemndwebservice-gvc.com",
+    from: "BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>",
     to: "admin@xn--bluemndwebservice-gvc.com",
   }, "/api/contact", contact);
-  assert.equal(options.from, "admin@xn--bluemndwebservice-gvc.com");
+  assert.equal(options.from, "BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>");
   assert.equal(options.to, "admin@xn--bluemndwebservice-gvc.com");
   assert.equal(options.replyTo, "ada@example.com");
 });

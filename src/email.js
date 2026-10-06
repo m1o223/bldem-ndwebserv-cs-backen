@@ -1,41 +1,27 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
 const BUSINESS_EMAIL = "admin@xn--bluemndwebservice-gvc.com";
-const EMAIL_TIMEOUT_MS = 8000;
+const DEFAULT_SENDER = "BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>";
 
-let transporter;
+let resendClient;
+let activeApiKey;
 
 function getEmailConfig(env) {
-  const host = env.SMTP_HOST;
-  const port = Number(env.SMTP_PORT || 587);
-  const user = env.SMTP_USER;
-  const pass = env.SMTP_PASS;
-  const from = env.EMAIL_FROM || user || BUSINESS_EMAIL;
+  const apiKey = env.RESEND_API_KEY;
+  const from = env.EMAIL_FROM || DEFAULT_SENDER;
   const to = env.EMAIL_TO || BUSINESS_EMAIL;
 
-  if (!host || !user || !pass) return null;
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid SMTP_PORT");
+  if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) return null;
 
-  return { host, port, user, pass, from, to };
+  return { apiKey: apiKey.trim(), from, to };
 }
 
-function getTransporter(config) {
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: config.host,
-      port: config.port,
-      secure: config.port === 465,
-      family: 4,
-      connectionTimeout: EMAIL_TIMEOUT_MS,
-      greetingTimeout: EMAIL_TIMEOUT_MS,
-      socketTimeout: EMAIL_TIMEOUT_MS,
-      auth: {
-        user: config.user,
-        pass: config.pass,
-      },
-    });
+function getResendClient(apiKey) {
+  if (!resendClient || activeApiKey !== apiKey) {
+    resendClient = new Resend(apiKey);
+    activeApiKey = apiKey;
   }
-  return transporter;
+  return resendClient;
 }
 
 function line(label, value) {
@@ -94,17 +80,13 @@ export function buildFormMailOptions(config, route, doc) {
 export async function sendFormNotification(env, route, doc) {
   const config = getEmailConfig(env);
   if (!config) {
-    console.warn("Email notification skipped: SMTP is not configured");
+    console.warn("Email notification skipped: Resend is not configured");
     return { sent: false, reason: "not_configured" };
   }
 
-  const result = await Promise.race([
-    getTransporter(config).sendMail(buildFormMailOptions(config, route, doc)),
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("SMTP notification timed out")), EMAIL_TIMEOUT_MS).unref();
-    }),
-  ]);
-  console.log("Email notification sent", { route, messageId: result.messageId ? "present" : "missing" });
+  const result = await getResendClient(config.apiKey).emails.send(buildFormMailOptions(config, route, doc));
+  if (result.error) throw new Error(result.error.message || "Resend email send failed");
+  console.log("Email notification sent", { route, provider: "resend", id: result.data?.id ? "present" : "missing" });
 
   return { sent: true };
 }
