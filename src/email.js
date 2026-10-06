@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 
 const BUSINESS_EMAIL = "admin@xn--bluemndwebservice-gvc.com";
+const EMAIL_TIMEOUT_MS = 8000;
 
 let transporter;
 
@@ -24,6 +25,9 @@ function getTransporter(config) {
       host: config.host,
       port: config.port,
       secure: config.port === 465,
+      connectionTimeout: EMAIL_TIMEOUT_MS,
+      greetingTimeout: EMAIL_TIMEOUT_MS,
+      socketTimeout: EMAIL_TIMEOUT_MS,
       auth: {
         user: config.user,
         pass: config.pass,
@@ -93,7 +97,13 @@ export async function sendFormNotification(env, route, doc) {
     return { sent: false, reason: "not_configured" };
   }
 
-  await getTransporter(config).sendMail(buildFormMailOptions(config, route, doc));
+  const result = await Promise.race([
+    getTransporter(config).sendMail(buildFormMailOptions(config, route, doc)),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("SMTP notification timed out")), EMAIL_TIMEOUT_MS).unref();
+    }),
+  ]);
+  console.log("Email notification sent", { route, messageId: result.messageId ? "present" : "missing" });
 
   return { sent: true };
 }
