@@ -25,6 +25,7 @@ function getTransporter(config) {
       host: config.host,
       port: config.port,
       secure: config.port === 465,
+      family: 4,
       connectionTimeout: EMAIL_TIMEOUT_MS,
       greetingTimeout: EMAIL_TIMEOUT_MS,
       socketTimeout: EMAIL_TIMEOUT_MS,
