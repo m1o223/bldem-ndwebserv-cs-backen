@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHealthServer } from "../src/server.js";
+import { buildContactEmail, buildFormMailOptions, buildQuoteEmail } from "../src/email.js";
 import { validateContactSubmission, validateQuoteSubmission, ValidationError } from "../src/validation.js";
 
 const env = { ALLOWED_ORIGINS: "http://localhost:3000,https://bluemindwebservice.com", NODE_ENV: "production" };
@@ -66,4 +67,42 @@ test("validators trim and shape stored documents", () => {
 
   assert.throws(() => validateContactSubmission({}), ValidationError);
   assert.throws(() => validateQuoteSubmission({}), ValidationError);
+});
+
+test("email notifications include inquiry details", () => {
+  const contact = validateContactSubmission({
+    name: "Ada Lovelace",
+    email: "ada@example.com",
+    phone: "+1 555 0100",
+    company: "Analytical Engines",
+    subject: "Website help",
+    message: "Please contact me about a website.",
+  });
+  const contactEmail = buildContactEmail(contact);
+  assert.equal(contactEmail.subject, "New BlueMind Website Inquiry - Ada Lovelace");
+  assert.match(contactEmail.text, /Name: Ada Lovelace/);
+  assert.match(contactEmail.text, /Email: ada@example.com/);
+  assert.match(contactEmail.text, /Source: BlueMind Web Service Contact Form/);
+
+  const quote = validateQuoteSubmission({
+    name: "Grace Hopper",
+    email: "grace@example.com",
+    service: "Business Website",
+    budget: "$2,000 - $5,000",
+    projectDescription: "Build a polished website for a service business.",
+    desiredTimeline: "This month",
+  });
+  const quoteEmail = buildQuoteEmail(quote);
+  assert.equal(quoteEmail.subject, "New BlueMind Quote Request - Grace Hopper");
+  assert.match(quoteEmail.text, /Requested service: Business Website/);
+  assert.match(quoteEmail.text, /Budget: \$2,000 - \$5,000/);
+  assert.match(quoteEmail.text, /Source: BlueMind Web Service Quote Form/);
+
+  const options = buildFormMailOptions({
+    from: "admin@xn--bluemndwebservice-gvc.com",
+    to: "admin@xn--bluemndwebservice-gvc.com",
+  }, "/api/contact", contact);
+  assert.equal(options.from, "admin@xn--bluemndwebservice-gvc.com");
+  assert.equal(options.to, "admin@xn--bluemndwebservice-gvc.com");
+  assert.equal(options.replyTo, "ada@example.com");
 });

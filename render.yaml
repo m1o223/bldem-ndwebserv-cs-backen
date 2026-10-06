@@ -18,3 +18,15 @@ services:
         sync: false
       - key: MONGODB_DB
         value: bluemind_web_service
+      - key: EMAIL_TO
+        value: admin@xn--bluemndwebservice-gvc.com
+      - key: EMAIL_FROM
+        value: admin@xn--bluemndwebservice-gvc.com
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        value: admin@xn--bluemndwebservice-gvc.com
+      - key: SMTP_PASS
+        sync: false

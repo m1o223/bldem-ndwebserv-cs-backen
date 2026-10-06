@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { getDatabase } from "./database.js";
+import { sendFormNotification } from "./email.js";
 import { validateContactSubmission, validateQuoteSubmission, ValidationError } from "./validation.js";
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -89,6 +90,11 @@ async function handleFormRoute(req, res, env, route) {
   const db = await getDatabase(env);
   await ensureCollections(db);
   await db.collection(collectionName).insertOne(doc);
+  try {
+    await sendFormNotification(env, route, doc);
+  } catch (error) {
+    console.error("Email notification failed", { route, message: error?.message });
+  }
 
   return json(res, 200, {
     success: true,
