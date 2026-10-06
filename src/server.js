@@ -21,16 +21,23 @@ import { validateContactSubmission, validateQuoteSubmission, ValidationError } f
 const BODY_LIMIT_BYTES = 32 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 20;
+const KNOWN_PRODUCTION_ORIGINS = [
+  "https://bluemindwebservice.com",
+  "https://www.bluemindwebservice.com",
+  "https://bluemind-web-service.vercel.app",
+  "https://admin-bluemindwebservise.vercel.app",
+];
 
 function parseAllowedOrigins(env) {
   const origins = (env.ALLOWED_ORIGINS || "").split(",").map(x => x.trim()).filter(Boolean);
   if (!origins.length) throw new Error("ALLOWED_ORIGINS must be configured");
-  for (const origin of origins) {
+  const allowedOrigins = [...origins, ...KNOWN_PRODUCTION_ORIGINS];
+  for (const origin of allowedOrigins) {
     const url = new URL(origin);
     if (url.origin !== origin || !["http:", "https:"].includes(url.protocol)) throw new Error("Invalid allowed origin");
     if (env.NODE_ENV === "production" && url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostname)) throw new Error("Production origins require HTTPS");
   }
-  return new Set(origins);
+  return new Set(allowedOrigins);
 }
 
 function json(res, status, data) {
