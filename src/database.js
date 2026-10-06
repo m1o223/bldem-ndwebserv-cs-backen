@@ -24,7 +24,11 @@ export async function getDatabase(env = process.env) {
       serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 5000
     });
-    clientPromise = client.connect();
+    clientPromise = client.connect().catch(error => {
+      clientPromise = undefined;
+      activeUri = undefined;
+      throw error;
+    });
   }
   const client = await clientPromise;
   return client.db(getDatabaseName(env));
