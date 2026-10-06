@@ -10,5 +10,8 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
     "test": "node --test"
+  },
+  "dependencies": {
+    "mongodb": "^6.21.0"
   }
 }

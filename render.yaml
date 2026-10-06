@@ -14,3 +14,7 @@ services:
         value: 22.23.3
       - key: ALLOWED_ORIGINS
         sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB
+        value: bluemind_web_service

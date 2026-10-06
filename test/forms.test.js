@@ -1,0 +1,69 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHealthServer } from "../src/server.js";
+import { validateContactSubmission, validateQuoteSubmission, ValidationError } from "../src/validation.js";
+
+const env = { ALLOWED_ORIGINS: "http://localhost:3000,https://bluemindwebservice.com", NODE_ENV: "production" };
+
+async function withServer(run) {
+  const server = createHealthServer(env);
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await run(`http://127.0.0.1:${server.address().port}`);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+}
+
+test("contact and quote routes reject invalid submissions before storage", async () => {
+  await withServer(async base => {
+    const contact = await fetch(`${base}/api/contact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://bluemindwebservice.com" },
+      body: JSON.stringify({ name: "", email: "not-email", message: "" })
+    });
+    assert.equal(contact.status, 400);
+    assert.equal(contact.headers.get("access-control-allow-origin"), "https://bluemindwebservice.com");
+    const contactBody = await contact.json();
+    assert.equal(contactBody.success, false);
+    assert.equal(contactBody.fields.email, "Please enter a valid email address.");
+
+    const quote = await fetch(`${base}/api/quote`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Ada", email: "ada@example.com", service: "", projectDescription: "short" })
+    });
+    assert.equal(quote.status, 400);
+    const quoteBody = await quote.json();
+    assert.equal(quoteBody.success, false);
+    assert.equal(quoteBody.fields.service, "Please select a service.");
+  });
+});
+
+test("form routes protect methods, content type, and preflight", async () => {
+  await withServer(async base => {
+    const preflight = await fetch(`${base}/api/contact`, { method: "OPTIONS", headers: { Origin: "https://bluemindwebservice.com", "Access-Control-Request-Method": "POST" } });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-methods"), "POST, OPTIONS");
+    assert.equal(preflight.headers.get("access-control-allow-headers"), "Content-Type");
+
+    assert.equal((await fetch(`${base}/api/contact`)).status, 405);
+    assert.equal((await fetch(`${base}/api/quote`, { method: "POST", body: "name=Ada" })).status, 415);
+  });
+});
+
+test("validators trim and shape stored documents", () => {
+  const contact = validateContactSubmission({ name: " Ada ", email: " ADA@Example.COM ", message: " Hello ", company: " BlueMind " });
+  assert.equal(contact.name, "Ada");
+  assert.equal(contact.email, "ada@example.com");
+  assert.equal(contact.company, "BlueMind");
+  assert.equal(contact.status, "new");
+  assert.ok(contact.createdAt instanceof Date);
+
+  const quote = validateQuoteSubmission({ name: "Ada", email: "ada@example.com", service: "Business Website", projectDescription: "A complete company website.", desiredTimeline: "Soon" });
+  assert.equal(quote.status, "new");
+  assert.equal(quote.service, "Business Website");
+
+  assert.throws(() => validateContactSubmission({}), ValidationError);
+  assert.throws(() => validateQuoteSubmission({}), ValidationError);
+});
