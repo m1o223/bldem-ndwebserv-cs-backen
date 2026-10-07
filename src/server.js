@@ -134,12 +134,12 @@ async function handleAdminLogin(req, res, env) {
   }
 
   const body = await readJsonBody(req);
-  const ok = await verifyAdminCredentials(env, body?.email, body?.password);
-  if (!ok) return json(res, 401, { success: false, error: "Invalid email or password." });
+  const admin = await verifyAdminCredentials(env, body?.email, body?.password);
+  if (!admin) return json(res, 401, { success: false, error: "Invalid email or password." });
 
-  const token = createAdminSession(env);
+  const token = createAdminSession(env, admin.employeeId);
   res.setHeader("Set-Cookie", buildAdminSessionCookie(token, env));
-  return json(res, 200, { success: true, admin: { email: String(env.ADMIN_EMAIL || "").trim().toLowerCase() } });
+  return json(res, 200, { success: true, admin });
 }
 
 function handleAdminLogout(req, res, env) {
@@ -152,8 +152,10 @@ function handleAdminLogout(req, res, env) {
 }
 
 function requireAdmin(req, res, env) {
-  if (isAdminRequest(req, env)) return true;
-  return json(res, 401, { success: false, error: "Authentication required." });
+  const session = isAdminRequest(req, env);
+  if (session) return session;
+  json(res, 401, { success: false, error: "Authentication required." });
+  return null;
 }
 
 async function listAdminOrders(req, res, env, url) {
@@ -197,7 +199,8 @@ async function updateAdminOrderStatus(req, res, env, orderNumber) {
   if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
     return json(res, 415, { success: false, error: "Content-Type must be application/json" });
   }
-  if (!requireAdmin(req, res, env)) return;
+  const admin = requireAdmin(req, res, env);
+  if (!admin) return;
 
   const body = await readJsonBody(req);
   const nextStatus = validateOrderStatus(body?.projectStatus);
@@ -208,9 +211,18 @@ async function updateAdminOrderStatus(req, res, env, orderNumber) {
   if (!current) return json(res, 404, { success: false, error: "Order not found." });
 
   const updatedAt = new Date();
+  const activity = {
+    employeeId: admin.employeeId,
+    action: `changed_status_to_${nextStatus.toLowerCase().replace(/\s+/g, "_")}`,
+    message: `${admin.employeeId} changed Order ${current.orderNumber} status to ${nextStatus}`,
+    createdAt: updatedAt,
+  };
   await collection.updateOne(
     { _id: current._id },
-    { $set: { projectStatus: nextStatus, updatedAt } },
+    {
+      $set: { projectStatus: nextStatus, updatedAt },
+      $push: { activity },
+    },
   );
   const updated = await collection.findOne({ _id: current._id });
 
@@ -221,6 +233,9 @@ async function updateAdminOrderStatus(req, res, env, orderNumber) {
       await db.collection("adminEvents").insertOne({
         type: "order_ready",
         orderNumber: updated.orderNumber,
+        employeeId: admin.employeeId,
+        action: activity.action,
+        message: activity.message,
         email: updated.email,
         notification,
         createdAt: new Date(),
@@ -288,7 +303,12 @@ export function createHealthServer(env = process.env) {
           res.setHeader("Allow", "GET, OPTIONS");
           return json(res, 405, { success: false, error: "Method not allowed" });
         }
-        return json(res, 200, { success: true, authenticated: isAdminRequest(req, env) });
+        const session = isAdminRequest(req, env);
+        return json(res, 200, {
+          success: true,
+          authenticated: Boolean(session),
+          admin: session ? { email: String(env.ADMIN_EMAIL || "").trim().toLowerCase(), employeeId: session.employeeId } : null,
+        });
       }
       if (route === "/api/admin/orders") return await listAdminOrders(req, res, env, url);
       if (adminOrderMatch) {

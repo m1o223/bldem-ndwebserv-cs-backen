@@ -26,25 +26,37 @@ function sign(value, secret) {
 
 export function getAdminConfig(env = process.env) {
   const email = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
-  const passwordHash = String(env.ADMIN_PASSWORD_HASH || "").trim();
+  const employees = [
+    { employeeId: "M", passwordHash: String(env.ADMIN_M_PASSWORD_HASH || "").trim() },
+    { employeeId: "R", passwordHash: String(env.ADMIN_R_PASSWORD_HASH || "").trim() },
+  ].filter(employee => employee.passwordHash);
 
-  if (!email || !passwordHash) return null;
-  return { email, passwordHash };
+  if (!email || employees.length < 2) return null;
+  return { email, employees };
 }
 
 export async function verifyAdminCredentials(env, email, password) {
   const config = getAdminConfig(env);
-  if (!config) return false;
-  if (String(email || "").trim().toLowerCase() !== config.email) return false;
-  if (typeof password !== "string" || !password) return false;
-  return bcrypt.compare(password, config.passwordHash);
+  if (!config) return null;
+  if (String(email || "").trim().toLowerCase() !== config.email) return null;
+  if (typeof password !== "string" || !password) return null;
+
+  for (const employee of config.employees) {
+    if (await bcrypt.compare(password, employee.passwordHash)) {
+      return { email: config.email, employeeId: employee.employeeId };
+    }
+  }
+
+  return null;
 }
 
-export function createAdminSession(env = process.env) {
+export function createAdminSession(env = process.env, employeeId) {
   const secret = getSecret(env);
+  if (!["M", "R"].includes(employeeId)) throw new Error("Invalid admin employee identity");
   const now = Math.floor(Date.now() / 1000);
   const payload = base64url(JSON.stringify({
     role: "admin",
+    employeeId,
     iat: now,
     exp: now + SESSION_TTL_SECONDS,
   }));
@@ -63,7 +75,10 @@ export function verifyAdminSession(token, env = process.env) {
 
   try {
     const session = JSON.parse(decodeBase64url(payload));
-    return session.role === "admin" && Number(session.exp) > Math.floor(Date.now() / 1000);
+    if (session.role !== "admin") return false;
+    if (!["M", "R"].includes(session.employeeId)) return false;
+    if (Number(session.exp) <= Math.floor(Date.now() / 1000)) return false;
+    return { role: "admin", employeeId: session.employeeId };
   } catch {
     return false;
   }

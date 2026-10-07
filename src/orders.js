@@ -106,6 +106,15 @@ export function buildOrderSearchQuery(search) {
 
 export function serializeOrder(order) {
   if (!order) return null;
+  const activity = Array.isArray(order.activity)
+    ? order.activity.map(item => ({
+        employeeId: item.employeeId,
+        action: item.action,
+        message: item.message,
+        createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : item.createdAt,
+      }))
+    : [];
+
   return {
     id: String(order._id),
     orderNumber: order.orderNumber,
@@ -123,6 +132,7 @@ export function serializeOrder(order) {
     deliveryDate: order.deliveryDate instanceof Date ? order.deliveryDate.toISOString() : order.deliveryDate,
     projectDescription: order.projectDescription,
     internalNotes: order.internalNotes || "",
+    activity,
     createdAt: order.createdAt instanceof Date ? order.createdAt.toISOString() : order.createdAt,
     updatedAt: order.updatedAt instanceof Date ? order.updatedAt.toISOString() : order.updatedAt,
   };

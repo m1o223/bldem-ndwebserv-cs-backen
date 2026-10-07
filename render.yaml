@@ -26,7 +26,9 @@ services:
         value: BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>
       - key: ADMIN_EMAIL
         sync: false
-      - key: ADMIN_PASSWORD_HASH
+      - key: ADMIN_M_PASSWORD_HASH
+        sync: false
+      - key: ADMIN_R_PASSWORD_HASH
         sync: false
       - key: ADMIN_SESSION_SECRET
         sync: false

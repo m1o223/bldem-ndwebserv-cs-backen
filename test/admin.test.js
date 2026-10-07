@@ -11,7 +11,8 @@ const env = {
   ALLOWED_ORIGINS: "http://localhost:3010,https://admin-bluemindwebservise.vercel.app",
   NODE_ENV: "development",
   ADMIN_EMAIL: "admin@example.com",
-  ADMIN_PASSWORD_HASH: bcrypt.hashSync("correct-password", 10),
+  ADMIN_M_PASSWORD_HASH: bcrypt.hashSync("m-password", 10),
+  ADMIN_R_PASSWORD_HASH: bcrypt.hashSync("r-password", 10),
   ADMIN_SESSION_SECRET: "test-secret-with-at-least-thirty-two-characters",
 };
 
@@ -25,7 +26,7 @@ async function withServer(run) {
   }
 }
 
-test("admin login validates credentials and creates an httpOnly session", async () => {
+test("admin login validates two employee passwords and creates an httpOnly session", async () => {
   await withServer(async base => {
     const denied = await fetch(`${base}/api/admin/login`, {
       method: "POST",
@@ -38,22 +39,35 @@ test("admin login validates credentials and creates an httpOnly session", async 
     const accepted = await fetch(`${base}/api/admin/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: "https://admin-bluemindwebservise.vercel.app" },
-      body: JSON.stringify({ email: "admin@example.com", password: "correct-password" }),
+      body: JSON.stringify({ email: "admin@example.com", password: "m-password" }),
     });
     assert.equal(accepted.status, 200);
+    assert.deepEqual(await accepted.json(), { success: true, admin: { email: "admin@example.com", employeeId: "M" } });
     assert.equal(accepted.headers.get("access-control-allow-credentials"), "true");
     assert.match(accepted.headers.get("set-cookie") || "", /HttpOnly/);
+
+    const second = await fetch(`${base}/api/admin/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://admin-bluemindwebservise.vercel.app" },
+      body: JSON.stringify({ email: "admin@example.com", password: "r-password" }),
+    });
+    assert.equal(second.status, 200);
+    assert.deepEqual(await second.json(), { success: true, admin: { email: "admin@example.com", employeeId: "R" } });
   });
 });
 
 test("admin session and logout use the session cookie", async () => {
   await withServer(async base => {
-    const token = createAdminSession(env);
+    const token = createAdminSession(env, "R");
     const session = await fetch(`${base}/api/admin/session`, {
       headers: { Cookie: `bluemind_admin_session=${encodeURIComponent(token)}` },
     });
     assert.equal(session.status, 200);
-    assert.deepEqual(await session.json(), { success: true, authenticated: true });
+    assert.deepEqual(await session.json(), {
+      success: true,
+      authenticated: true,
+      admin: { email: "admin@example.com", employeeId: "R" },
+    });
 
     const logout = await fetch(`${base}/api/admin/logout`, { method: "POST" });
     assert.equal(logout.status, 200);
