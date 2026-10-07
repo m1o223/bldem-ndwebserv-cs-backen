@@ -1,11 +1,14 @@
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import {
+  buildAdminIdentity,
   buildAdminLogoutCookie,
   buildAdminSessionCookie,
   createAdminSession,
   isAdminRequest,
   verifyAdminCredentials,
+  ADMIN_EMPLOYEES,
+  getAdminEmployee,
 } from "./adminAuth.js";
 import { getDatabase } from "./database.js";
 import { sendFormNotification, sendOrderReadyNotification } from "./email.js";
@@ -21,6 +24,7 @@ import { validateContactSubmission, validateQuoteSubmission, ValidationError } f
 const BODY_LIMIT_BYTES = 32 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 20;
+const PRESENCE_TIMEOUT_MS = 120_000;
 const KNOWN_PRODUCTION_ORIGINS = [
   "https://bluemindwebservice.com",
   "https://www.bluemindwebservice.com",
@@ -91,12 +95,61 @@ function readJsonBody(req) {
 
 async function ensureCollections(db) {
   const existing = new Set((await db.listCollections({}, { nameOnly: true }).toArray()).map(collection => collection.name));
-  for (const name of ["contacts", "quoteRequests", "clients", "projects", "orders", "adminEvents"]) {
+  for (const name of ["contacts", "quoteRequests", "clients", "projects", "orders", "adminEvents", "adminPresence"]) {
     if (!existing.has(name)) await db.createCollection(name);
   }
   await ensureOrderIndexes(db);
+  await db.collection("adminPresence").createIndex({ employeeId: 1 }, { unique: true });
 }
 
+
+function serializeAdmin(env, sessionOrAdmin) {
+  if (!sessionOrAdmin) return null;
+  return buildAdminIdentity(env, sessionOrAdmin.employeeId);
+}
+
+function serializePresence(doc, now = new Date()) {
+  const employee = getAdminEmployee(doc.employeeId) || doc;
+  const lastSeenAt = doc.lastSeenAt instanceof Date ? doc.lastSeenAt : (doc.lastSeenAt ? new Date(doc.lastSeenAt) : null);
+  const online = lastSeenAt ? now.getTime() - lastSeenAt.getTime() <= PRESENCE_TIMEOUT_MS : false;
+  return {
+    employeeId: employee.employeeId,
+    displayName: employee.displayName,
+    online,
+    lastSeenAt: lastSeenAt ? lastSeenAt.toISOString() : null,
+  };
+}
+
+async function updateAdminPresence(env, employeeId, { online = true } = {}) {
+  const employee = getAdminEmployee(employeeId);
+  if (!employee || !env.MONGODB_URI) return null;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const lastSeenAt = online ? new Date() : new Date(0);
+  await db.collection("adminPresence").updateOne(
+    { employeeId: employee.employeeId },
+    {
+      $set: {
+        employeeId: employee.employeeId,
+        displayName: employee.displayName,
+        lastSeenAt,
+        updatedAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+  return { ...employee, lastSeenAt };
+}
+
+async function getAdminPresence(env) {
+  if (!env.MONGODB_URI) return ADMIN_EMPLOYEES.map(employee => serializePresence(employee));
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const docs = await db.collection("adminPresence").find({}).toArray();
+  const byId = new Map(docs.map(doc => [doc.employeeId, doc]));
+  const now = new Date();
+  return ADMIN_EMPLOYEES.map(employee => serializePresence(byId.get(employee.employeeId) || employee, now));
+}
 async function handleFormRoute(req, res, env, route) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
@@ -138,15 +191,18 @@ async function handleAdminLogin(req, res, env) {
   if (!admin) return json(res, 401, { success: false, error: "Invalid email or password." });
 
   const token = createAdminSession(env, admin.employeeId);
+  await updateAdminPresence(env, admin.employeeId);
   res.setHeader("Set-Cookie", buildAdminSessionCookie(token, env));
   return json(res, 200, { success: true, admin });
 }
 
-function handleAdminLogout(req, res, env) {
+async function handleAdminLogout(req, res, env) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
     return json(res, 405, { success: false, error: "Method not allowed" });
   }
+  const session = isAdminRequest(req, env);
+  if (session) await updateAdminPresence(env, session.employeeId, { online: false });
   res.setHeader("Set-Cookie", buildAdminLogoutCookie(env));
   return json(res, 200, { success: true });
 }
@@ -158,6 +214,28 @@ function requireAdmin(req, res, env) {
   return null;
 }
 
+
+async function handleAdminPresence(req, res, env) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!requireAdmin(req, res, env)) return;
+  const employees = await getAdminPresence(env);
+  return json(res, 200, { success: true, employees });
+}
+
+async function handleAdminPresenceHeartbeat(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const session = requireAdmin(req, res, env);
+  if (!session) return;
+  await updateAdminPresence(env, session.employeeId);
+  const employees = await getAdminPresence(env);
+  return json(res, 200, { success: true, employee: serializeAdmin(env, session), employees });
+}
 async function listAdminOrders(req, res, env, url) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET, OPTIONS");
@@ -214,7 +292,8 @@ async function updateAdminOrderStatus(req, res, env, orderNumber) {
   const activity = {
     employeeId: admin.employeeId,
     action: `changed_status_to_${nextStatus.toLowerCase().replace(/\s+/g, "_")}`,
-    message: `${admin.employeeId} changed Order ${current.orderNumber} status to ${nextStatus}`,
+    displayName: admin.displayName,
+    message: `${admin.displayName} changed Order ${current.orderNumber} status to ${nextStatus}`,
     createdAt: updatedAt,
   };
   await collection.updateOne(
@@ -236,6 +315,7 @@ async function updateAdminOrderStatus(req, res, env, orderNumber) {
         employeeId: admin.employeeId,
         action: activity.action,
         message: activity.message,
+        displayName: admin.displayName,
         email: updated.email,
         notification,
         createdAt: new Date(),
@@ -271,7 +351,7 @@ export function createHealthServer(env = process.env) {
     const adminOrderMatch = route.match(/^\/api\/admin\/orders\/([^/]+)$/);
     const allowedMethods = route === "/api/admin/orders" || adminOrderMatch
       ? "GET, PATCH, OPTIONS"
-      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" ? "POST, OPTIONS" : "GET, OPTIONS");
+      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
@@ -297,7 +377,7 @@ export function createHealthServer(env = process.env) {
         return await handleAdminLogin(req, res, env);
       }
 
-      if (route === "/api/admin/logout") return handleAdminLogout(req, res, env);
+      if (route === "/api/admin/logout") return await handleAdminLogout(req, res, env);
       if (route === "/api/admin/session") {
         if (req.method !== "GET") {
           res.setHeader("Allow", "GET, OPTIONS");
@@ -307,9 +387,12 @@ export function createHealthServer(env = process.env) {
         return json(res, 200, {
           success: true,
           authenticated: Boolean(session),
-          admin: session ? { email: String(env.ADMIN_EMAIL || "").trim().toLowerCase(), employeeId: session.employeeId } : null,
+          admin: session ? serializeAdmin(env, session) : null,
+          employee: session ? serializeAdmin(env, session) : null,
         });
       }
+      if (route === "/api/admin/presence") return await handleAdminPresence(req, res, env);
+      if (route === "/api/admin/presence/heartbeat") return await handleAdminPresenceHeartbeat(req, res, env);
       if (route === "/api/admin/orders") return await listAdminOrders(req, res, env, url);
       if (adminOrderMatch) {
         const orderNumber = decodeURIComponent(adminOrderMatch[1]);

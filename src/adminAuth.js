@@ -4,6 +4,25 @@ import bcrypt from "bcryptjs";
 export const ADMIN_COOKIE_NAME = "bluemind_admin_session";
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 
+export const ADMIN_EMPLOYEES = [
+  { employeeId: "M", displayName: "Mohmed" },
+  { employeeId: "R", displayName: "Rokaia" },
+];
+
+export function getAdminEmployee(employeeId) {
+  return ADMIN_EMPLOYEES.find(employee => employee.employeeId === employeeId) || null;
+}
+
+export function buildAdminIdentity(env = process.env, employeeId) {
+  const employee = getAdminEmployee(employeeId);
+  if (!employee) return null;
+  return {
+    email: String(env.ADMIN_EMAIL || "").trim().toLowerCase(),
+    employeeId: employee.employeeId,
+    displayName: employee.displayName,
+  };
+}
+
 function base64url(value) {
   return Buffer.from(value).toString("base64url");
 }
@@ -27,8 +46,8 @@ function sign(value, secret) {
 export function getAdminConfig(env = process.env) {
   const email = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
   const employees = [
-    { employeeId: "M", passwordHash: String(env.ADMIN_M_PASSWORD_HASH || "").trim() },
-    { employeeId: "R", passwordHash: String(env.ADMIN_R_PASSWORD_HASH || "").trim() },
+    { ...ADMIN_EMPLOYEES[0], passwordHash: String(env.ADMIN_M_PASSWORD_HASH || "").trim() },
+    { ...ADMIN_EMPLOYEES[1], passwordHash: String(env.ADMIN_R_PASSWORD_HASH || "").trim() },
   ].filter(employee => employee.passwordHash);
 
   if (!email || employees.length < 2) return null;
@@ -43,7 +62,7 @@ export async function verifyAdminCredentials(env, email, password) {
 
   for (const employee of config.employees) {
     if (await bcrypt.compare(password, employee.passwordHash)) {
-      return { email: config.email, employeeId: employee.employeeId };
+      return { email: config.email, employeeId: employee.employeeId, displayName: employee.displayName };
     }
   }
 
@@ -78,7 +97,9 @@ export function verifyAdminSession(token, env = process.env) {
     if (session.role !== "admin") return false;
     if (!["M", "R"].includes(session.employeeId)) return false;
     if (Number(session.exp) <= Math.floor(Date.now() / 1000)) return false;
-    return { role: "admin", employeeId: session.employeeId };
+    const employee = getAdminEmployee(session.employeeId);
+    if (!employee) return false;
+    return { role: "admin", employeeId: employee.employeeId, displayName: employee.displayName };
   } catch {
     return false;
   }

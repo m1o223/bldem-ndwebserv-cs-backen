@@ -42,7 +42,7 @@ test("admin login validates two employee passwords and creates an httpOnly sessi
       body: JSON.stringify({ email: "admin@example.com", password: "m-password" }),
     });
     assert.equal(accepted.status, 200);
-    assert.deepEqual(await accepted.json(), { success: true, admin: { email: "admin@example.com", employeeId: "M" } });
+    assert.deepEqual(await accepted.json(), { success: true, admin: { email: "admin@example.com", employeeId: "M", displayName: "Mohmed" } });
     assert.equal(accepted.headers.get("access-control-allow-credentials"), "true");
     assert.match(accepted.headers.get("set-cookie") || "", /HttpOnly/);
 
@@ -52,7 +52,7 @@ test("admin login validates two employee passwords and creates an httpOnly sessi
       body: JSON.stringify({ email: "admin@example.com", password: "r-password" }),
     });
     assert.equal(second.status, 200);
-    assert.deepEqual(await second.json(), { success: true, admin: { email: "admin@example.com", employeeId: "R" } });
+    assert.deepEqual(await second.json(), { success: true, admin: { email: "admin@example.com", employeeId: "R", displayName: "Rokaia" } });
   });
 });
 
@@ -66,7 +66,8 @@ test("admin session and logout use the session cookie", async () => {
     assert.deepEqual(await session.json(), {
       success: true,
       authenticated: true,
-      admin: { email: "admin@example.com", employeeId: "R" },
+      admin: { email: "admin@example.com", employeeId: "R", displayName: "Rokaia" },
+      employee: { email: "admin@example.com", employeeId: "R", displayName: "Rokaia" },
     });
 
     const logout = await fetch(`${base}/api/admin/logout`, { method: "POST" });
@@ -95,4 +96,14 @@ test("order status validation and ready email are shaped safely", () => {
   assert.equal(email.subject, "Your BlueMind Web Service order #515 is ready");
   assert.match(email.text, /Ahmed Example/);
   assert.match(email.text, /E-commerce Website/);
+});
+
+test("admin presence routes are protected before database access", async () => {
+  await withServer(async base => {
+    const presence = await fetch(`${base}/api/admin/presence`);
+    assert.equal(presence.status, 401);
+
+    const heartbeat = await fetch(`${base}/api/admin/presence/heartbeat`, { method: "POST" });
+    assert.equal(heartbeat.status, 401);
+  });
 });

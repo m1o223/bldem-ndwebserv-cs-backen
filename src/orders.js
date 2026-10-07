@@ -109,6 +109,7 @@ export function serializeOrder(order) {
   const activity = Array.isArray(order.activity)
     ? order.activity.map(item => ({
         employeeId: item.employeeId,
+        displayName: item.displayName,
         action: item.action,
         message: item.message,
         createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : item.createdAt,
