@@ -19,6 +19,7 @@ import {
   serializeOrder,
   validateOrderStatus,
 } from "./orders.js";
+import { listActiveWebsitePackages } from "./pricing.js";
 import { validateContactSubmission, validateQuoteSubmission, ValidationError } from "./validation.js";
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -95,7 +96,20 @@ function readJsonBody(req) {
 
 async function ensureCollections(db) {
   const existing = new Set((await db.listCollections({}, { nameOnly: true }).toArray()).map(collection => collection.name));
-  for (const name of ["contacts", "quoteRequests", "clients", "projects", "orders", "adminEvents", "adminPresence"]) {
+  for (const name of [
+    "contacts",
+    "quoteRequests",
+    "clients",
+    "projects",
+    "orders",
+    "adminEvents",
+    "adminPresence",
+    "counters",
+    "paymentEvents",
+    "orderEmailVerifications",
+    "orderNotifications",
+    "careSubscriptions",
+  ]) {
     if (!existing.has(name)) await db.createCollection(name);
   }
   await ensureOrderIndexes(db);
@@ -370,6 +384,14 @@ export function createHealthServer(env = process.env) {
           return json(res, 405, { success: false, error: "Method not allowed" });
         }
         return json(res, 200, { success: true, service: "BlueMind Web Service API", status: "healthy" });
+      }
+
+      if (route === "/api/pricing/packages") {
+        if (req.method !== "GET") {
+          res.setHeader("Allow", "GET, OPTIONS");
+          return json(res, 405, { success: false, error: "Method not allowed" });
+        }
+        return json(res, 200, { success: true, packages: listActiveWebsitePackages() });
       }
 
       if (route === "/api/admin/login") {
