@@ -145,6 +145,8 @@ export async function ensureOrderIndexes(db) {
   await db.collection("careSubscriptions").createIndex({ orderNumber: 1 });
   await db.collection("careSubscriptions").createIndex({ customerEmail: 1 });
   await db.collection("orderEmailVerifications").createIndex({ email: 1, createdAt: -1 });
+  await db.collection("orderEmailVerifications").createIndex({ email: 1, checkoutAttemptId: 1, createdAt: -1 });
+  await db.collection("orderEmailVerifications").createIndex({ verificationTokenHash: 1 }, { sparse: true });
   await db.collection("orderEmailVerifications").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 }
 

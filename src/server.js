@@ -12,6 +12,7 @@ import {
 } from "./adminAuth.js";
 import { getDatabase } from "./database.js";
 import { sendFormNotification, sendOrderReadyNotification } from "./email.js";
+import { requestEmailVerification, verifyEmailCode } from "./emailVerification.js";
 import {
   buildOrderSearchQuery,
   ensureOrderIndexes,
@@ -218,6 +219,43 @@ async function handleFormRoute(req, res, env, route) {
   });
 }
 
+async function handleEmailVerificationSend(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+  const body = await readJsonBody(req);
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const verification = await requestEmailVerification({ env, db, body, ip: getClientKey(req) });
+  return json(res, 200, {
+    success: true,
+    message: "Verification code sent.",
+    verification,
+  });
+}
+
+async function handleEmailVerificationVerify(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+  const body = await readJsonBody(req);
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const verification = await verifyEmailCode({ env, db, body });
+  return json(res, 200, {
+    success: true,
+    message: "Email verified.",
+    verification,
+  });
+}
 async function handleStripeCheckout(req, res, env) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
@@ -438,11 +476,12 @@ export function createHealthServer(env = process.env) {
     const isFormRoute = route === "/api/contact" || route === "/api/quote";
     const isAdminRoute = route.startsWith("/api/admin/");
     const isStripeWebhookRoute = route === "/api/payments/stripe/webhook";
+    const isEmailVerificationRoute = route === "/api/order-email-verification/send" || route === "/api/order-email-verification/verify";
     const stripeStatusMatch = route.match(/^\/api\/payments\/stripe\/sessions\/([^/]+)$/);
     const adminOrderMatch = route.match(/^\/api\/admin\/orders\/([^/]+)$/);
     const allowedMethods = route === "/api/admin/orders" || adminOrderMatch
       ? "GET, PATCH, OPTIONS"
-      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || isStripeWebhookRoute ? "POST, OPTIONS" : "GET, OPTIONS");
+      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
@@ -471,6 +510,15 @@ export function createHealthServer(env = process.env) {
           return json(res, 405, { success: false, error: "Method not allowed" });
         }
         return json(res, 200, { success: true, packages: listActiveWebsitePackages() });
+      }
+
+      if (route === "/api/order-email-verification/send") {
+        if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+        return await handleEmailVerificationSend(req, res, env);
+      }
+      if (route === "/api/order-email-verification/verify") {
+        if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+        return await handleEmailVerificationVerify(req, res, env);
       }
 
       if (route === "/api/payments/stripe/checkout") {

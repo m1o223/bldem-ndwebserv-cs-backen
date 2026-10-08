@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import { createOrderFromVerifiedPayment, serializeOrder, validateWebsiteOrderDraft } from "./orders.js";
 import { calculatePaymentAmounts, formatSek, PAYMENT_OPTIONS } from "./pricing.js";
 import { sendOrderPaymentNotifications } from "./email.js";
+import { verifyEmailToken } from "./emailVerification.js";
 
 export const STRIPE_PRICE_IDS = {
   "one-page-website": {
@@ -76,8 +77,13 @@ function getFrontendBaseUrl(env) {
 }
 
 export async function createStripeCheckoutSession({ env, db, body }) {
-  const stripe = getStripe(env);
   const draft = buildCheckoutDraft(body);
+  const emailVerification = await verifyEmailToken(db, {
+    email: draft.verifiedEmail,
+    checkoutAttemptId: body?.checkoutAttemptId,
+    token: body?.emailVerificationToken,
+  });
+  const stripe = getStripe(env);
   const pendingCheckoutId = randomUUID();
   const frontendBase = getFrontendBaseUrl(env);
   const now = new Date();
@@ -96,6 +102,8 @@ export async function createStripeCheckoutSession({ env, db, body }) {
     companyName: draft.companyName || "",
     email: draft.verifiedEmail,
     verifiedEmail: draft.verifiedEmail,
+    emailVerificationId: emailVerification.verificationId,
+    checkoutAttemptId: emailVerification.checkoutAttemptId,
     phone: draft.phone,
     projectDescription: draft.projectDescription,
     requestedFeatures: draft.requestedFeatures,

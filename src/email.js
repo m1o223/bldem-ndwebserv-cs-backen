@@ -24,6 +24,69 @@ function getResendClient(apiKey) {
   return resendClient;
 }
 
+
+const verificationCopy = {
+  en: {
+    subject: "BlueMind - Verify Your Email",
+    greeting: "Hello,",
+    intro: "Your BlueMind verification code is:",
+    instruction: "Enter this code on our website to verify your email address.",
+    expiry: "This code expires in 10 minutes.",
+    ignore: "If you didn't request this code, you can ignore this email.",
+  },
+  sv: {
+    subject: "BlueMind - Verifiera din e-post",
+    greeting: "Hej,",
+    intro: "Din verifieringskod från BlueMind är:",
+    instruction: "Ange koden på vår webbplats för att verifiera din e-postadress.",
+    expiry: "Koden gäller i 10 minuter.",
+    ignore: "Om du inte begärde den här koden kan du ignorera mejlet.",
+  },
+  ar: {
+    subject: "BlueMind - تحقق من بريدك الإلكتروني",
+    greeting: "مرحباً،",
+    intro: "رمز التحقق الخاص بك من BlueMind هو:",
+    instruction: "أدخل هذا الرمز على موقعنا لتأكيد بريدك الإلكتروني.",
+    expiry: "تنتهي صلاحية هذا الرمز خلال 10 دقائق.",
+    ignore: "إذا لم تطلب هذا الرمز، يمكنك تجاهل هذه الرسالة.",
+  },
+};
+
+function getVerificationCopy(language) {
+  return verificationCopy[language] || verificationCopy.en;
+}
+
+export function buildEmailVerificationEmail({ code, language = "en" }) {
+  const copy = getVerificationCopy(language);
+  return {
+    subject: copy.subject,
+    text: [
+      copy.greeting,
+      "",
+      copy.intro,
+      "",
+      code,
+      "",
+      copy.instruction,
+      copy.expiry,
+      "",
+      copy.ignore,
+      "",
+      "BlueMind Web Service",
+    ].join("\n"),
+    html: [
+      '<div style="font-family:Arial,sans-serif;color:#171c25;line-height:1.6;max-width:560px">',
+      `<p>${copy.greeting}</p>`,
+      `<p>${copy.intro}</p>`,
+      `<div style="font-size:32px;letter-spacing:8px;font-weight:700;border:1px solid #dfe4eb;border-radius:14px;padding:18px 22px;text-align:center;margin:20px 0;background:#f8fafc">${code}</div>`,
+      `<p>${copy.instruction}</p>`,
+      `<p>${copy.expiry}</p>`,
+      `<p style="color:#667085;font-size:13px">${copy.ignore}</p>`,
+      '<p>BlueMind Web Service</p>',
+      '</div>',
+    ].join(""),
+  };
+}
 function line(label, value) {
   return `${label}: ${value || "Not provided"}`;
 }
@@ -211,4 +274,25 @@ export async function sendOrderPaymentNotifications(env, order) {
 
   console.log("Order payment emails sent", { provider: "resend", orderNumber: order.orderNumber });
   return result;
+}
+export async function sendEmailVerificationCode(env, { email, code, language = "en" }) {
+  const config = getEmailConfig(env);
+  if (!config) {
+    console.warn("Email verification skipped: Resend is not configured");
+    throw new Error("Resend is not configured");
+  }
+
+  const emailContent = buildEmailVerificationEmail({ code, language });
+  const result = await getResendClient(config.apiKey).emails.send({
+    from: config.from,
+    to: email,
+    replyTo: config.to,
+    subject: emailContent.subject,
+    text: emailContent.text,
+    html: emailContent.html,
+  });
+
+  if (result.error) throw new Error(result.error.message || "Verification email failed");
+  console.log("Email verification sent", { provider: "resend", id: result.data?.id ? "present" : "missing" });
+  return { sent: true };
 }
