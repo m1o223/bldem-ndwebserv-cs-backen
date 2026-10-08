@@ -8,11 +8,18 @@ import {
 } from "./pricing.js";
 
 export const ORDER_STATUSES = [
-  "New",
+  "Pending Review",
+  "Awaiting Clarification",
+  "Confirmed",
   "In Progress",
+  "Design Preview",
+  "Revisions",
+  "Final Review",
+  "Awaiting Final Payment",
+  "Completed",
+  "New",
   "Waiting for Client",
   "Ready",
-  "Completed",
   "Cancelled",
 ];
 
@@ -32,8 +39,19 @@ export const ORDER_EVENT_TYPES = [
   "deposit_received",
   "final_payment_received",
   "project_details_submitted",
+  "order_confirmed",
+  "order_viewed",
+  "clarification_requested",
+  "notification_queued",
+  "notification_sent",
+  "notification_failed",
   "order_ready",
   "care_subscription_prepared",
+];
+
+export const ORDER_REVIEW_STATUSES = [
+  "pending_review",
+  "confirmed",
 ];
 
 export const CARE_PLAN_IDS = ["care-basic", "care-plus", "care-pro"];
@@ -134,6 +152,8 @@ export async function ensureOrderIndexes(db) {
   await db.collection("orders").createIndex({ orderNumber: 1 }, { unique: true });
   await db.collection("orders").createIndex({ packageId: 1 });
   await db.collection("orders").createIndex({ paymentStatus: 1 });
+  await db.collection("orders").createIndex({ projectStatus: 1 });
+  await db.collection("orders").createIndex({ reviewStatus: 1 });
   await db.collection("orders").createIndex({ createdAt: -1 });
   await db.collection("orders").createIndex({
     orderNumber: "text",
@@ -142,6 +162,8 @@ export async function ensureOrderIndexes(db) {
     email: "text",
   });
   await db.collection("paymentEvents").createIndex({ provider: 1, eventId: 1 }, { unique: true });
+  await db.collection("orderNotifications").createIndex({ orderNumber: 1, type: 1, dedupeKey: 1 }, { unique: true });
+  await db.collection("orderNotifications").createIndex({ status: 1, updatedAt: -1 });
   await db.collection("careSubscriptions").createIndex({ orderNumber: 1 });
   await db.collection("careSubscriptions").createIndex({ customerEmail: 1 });
   await db.collection("orderEmailVerifications").createIndex({ email: 1, createdAt: -1 });
@@ -218,6 +240,8 @@ export function validateWebsiteOrderDraft(body) {
   const customerName = cleanString(source.customerName, 160);
   const verifiedEmail = cleanString(source.verifiedEmail || source.email, 320).toLowerCase();
   const projectDescription = cleanString(source.projectDescription, 5000);
+  const language = cleanString(source.customerLanguage || source.language, 8);
+  const customerLanguage = ["en", "sv", "ar"].includes(language) ? language : "en";
 
   let packageItem = null;
   let paymentOption = "";
@@ -251,6 +275,7 @@ export function validateWebsiteOrderDraft(body) {
       "contentStatus",
       "additionalNotes",
     ]),
+    customerLanguage,
   };
 }
 
@@ -310,10 +335,15 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
     paymentEventId,
     paymentReference: paymentReference || undefined,
     paymentStatus,
-    projectStatus: "New",
+    projectStatus: "Pending Review",
+    reviewStatus: "pending_review",
+    reviewedAt: null,
+    reviewedBy: null,
+    viewedBy: [],
     projectDescription: draft.projectDescription,
     requestedFeatures: draft.requestedFeatures,
     websiteDetails: draft.websiteDetails,
+    customerLanguage: draft.customerLanguage,
     orderDate: createdAt,
     deliveryDate: finalDeliveryDate,
     isDemo: false,
@@ -323,11 +353,13 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
     activity: [
       createOrderActivity({
         action: "order_created",
-        message: `System created ${normalizedOrderNumber} after verified ${paymentProvider} payment.`,
+        message: `System created ${normalizedOrderNumber} after verified ${paymentProvider} payment. Project is pending employee review.`,
         createdAt,
       }),
     ],
     events,
+    notificationStatus: {},
+    clarificationRequests: [],
     careEligibility: {
       eligible: true,
       reason: "paid_website_order",
@@ -436,14 +468,32 @@ export function serializeOrder(order) {
     currency: order.currency,
     paymentOption: order.paymentOption,
     paymentProvider: order.paymentProvider,
+    paymentReference: order.paymentReference,
     paymentStatus: order.paymentStatus,
     projectStatus: order.projectStatus,
+    reviewStatus: order.reviewStatus || (order.projectStatus === "Confirmed" ? "confirmed" : "pending_review"),
+    reviewedAt: order.reviewedAt instanceof Date ? order.reviewedAt.toISOString() : order.reviewedAt,
+    reviewedBy: order.reviewedBy,
+    viewedBy: Array.isArray(order.viewedBy)
+      ? order.viewedBy.map(item => ({
+          ...item,
+          viewedAt: item.viewedAt instanceof Date ? item.viewedAt.toISOString() : item.viewedAt,
+        }))
+      : [],
     orderDate: order.orderDate instanceof Date ? order.orderDate.toISOString() : order.orderDate,
     deliveryDate: order.deliveryDate instanceof Date ? order.deliveryDate.toISOString() : order.deliveryDate,
     projectDescription: order.projectDescription,
     requestedFeatures: Array.isArray(order.requestedFeatures) ? order.requestedFeatures : [],
     websiteDetails: order.websiteDetails || {},
     internalNotes: order.internalNotes || "",
+    customerLanguage: order.customerLanguage || "en",
+    notificationStatus: order.notificationStatus || {},
+    clarificationRequests: Array.isArray(order.clarificationRequests)
+      ? order.clarificationRequests.map(item => ({
+          ...item,
+          createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : item.createdAt,
+        }))
+      : [],
     activity,
     events: Array.isArray(order.events)
       ? order.events.map(item => ({

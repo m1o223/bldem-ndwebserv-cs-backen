@@ -160,42 +160,120 @@ function formatSekFromOre(value) {
   return `${new Intl.NumberFormat("sv-SE").format(value / 100)} SEK`;
 }
 
+function getAdminDashboardUrl(env, orderNumber) {
+  const base = (env.ADMIN_FRONTEND_URL || "https://admin-bluemindwebservice.vercel.app").replace(/\/$/, "");
+  return `${base}/?order=${encodeURIComponent(orderNumber)}`;
+}
+
+async function sendEmail(env, options, { customerFacing = false } = {}) {
+  const config = customerFacing ? getCustomerEmailConfig(env) : getEmailConfig(env);
+  if (!config) return { sent: false, reason: "not_configured" };
+
+  const result = await getResendClient(config.apiKey).emails.send({
+    from: options.from || config.from,
+    to: options.to,
+    replyTo: options.replyTo || config.replyTo || config.to,
+    subject: options.subject,
+    text: options.text,
+    html: options.html,
+  });
+  if (result.error) throw new Error(result.error.message || "Resend email send failed");
+  return { sent: true, providerMessageId: result.data?.id };
+}
+
+function paymentTypeLabel(order) {
+  return order.paymentOption === "deposit" ? "50% Deposit" : "Full";
+}
+
 export function buildCustomerPaymentEmail(order) {
   return {
-    subject: `BlueMind Web Service payment confirmed - ${order.orderNumber}`,
+    subject: `BlueMind - Payment Received | Order ${order.orderNumber}`,
     text: [
       `Hello ${order.customerName || "there"},`,
       "",
-      "Your BlueMind Web Service payment has been confirmed.",
-      line("Order number", order.orderNumber),
-      line("Package", order.packageName || order.package),
-      line("Amount paid", formatSekFromOre(order.amountPaidOre)),
-      line("Remaining balance", formatSekFromOre(order.remainingBalanceOre)),
-      line("Payment status", order.paymentStatus),
-      line("Project summary", order.projectDescription),
+      "Thank you for choosing BlueMind Web Service.",
+      "We have successfully received your payment.",
       "",
-      "Our team will review your project details and contact you shortly.",
+      "Your order number is:",
+      order.orderNumber,
+      "",
+      line("Package", order.packageName || order.package),
+      line("Total Price", formatSekFromOre(order.totalAmountOre)),
+      line("Paid", formatSekFromOre(order.amountPaidOre)),
+      line("Remaining", formatSekFromOre(order.remainingBalanceOre)),
+      "",
+      "Your project has been received and our team will review your requirements within 24 hours.",
+      "We will contact you with the next steps.",
+      "",
+      "Thank you,",
+      "BlueMind Web Service",
     ].join("\n"),
   };
 }
 
-export function buildBusinessPaymentEmail(order) {
+export function buildBusinessPaymentEmail(order, env = {}) {
+  const adminUrl = getAdminDashboardUrl(env, order.orderNumber);
   return {
-    subject: `New BlueMind paid order - ${order.orderNumber}`,
+    subject: `New Paid Website Order - BlueMind ${order.orderNumber}`,
     text: [
-      "A new paid website order has been confirmed.",
+      "NEW WEBSITE ORDER RECEIVED",
       "",
-      line("Order number", order.orderNumber),
+      line("Order Number", order.orderNumber),
       line("Customer", order.customerName),
-      line("Email", order.email),
-      line("Company", order.companyName),
+      line("Customer Email", order.email),
       line("Package", order.packageName || order.package),
-      line("Payment option", order.paymentOption),
-      line("Amount paid", formatSekFromOre(order.amountPaidOre)),
-      line("Remaining balance", formatSekFromOre(order.remainingBalanceOre)),
-      line("Payment status", order.paymentStatus),
-      line("Stripe payment reference", order.paymentReference),
-      line("Project description", order.projectDescription),
+      line("Total Price", formatSekFromOre(order.totalAmountOre)),
+      line("Payment Type", paymentTypeLabel(order)),
+      line("Amount Paid", formatSekFromOre(order.amountPaidOre)),
+      line("Remaining Balance", formatSekFromOre(order.remainingBalanceOre)),
+      "Payment Status: Confirmed",
+      line("Project Status", order.projectStatus || "Pending Review"),
+      line("Project Description", order.projectDescription),
+      line("Requested Features", Array.isArray(order.requestedFeatures) ? order.requestedFeatures.join(", ") : ""),
+      line("Order Date", formatDate(order.createdAt || order.orderDate)),
+      "",
+      `View Order in Admin Dashboard: ${adminUrl}`,
+    ].join("\n"),
+  };
+}
+
+export function buildCustomerReviewedEmail(order) {
+  return {
+    subject: `BlueMind - Your Project Is Confirmed | Order ${order.orderNumber}`,
+    text: [
+      `Hello ${order.customerName || "there"},`,
+      "",
+      "We have reviewed your website order and your project requirements.",
+      `Your order ${order.orderNumber} has now been confirmed by our team.`,
+      "",
+      "We understand the information you provided and are preparing to begin work on your website.",
+      "We will keep you updated throughout the development process.",
+      "If we need any additional details, we will contact you directly.",
+      "",
+      "Thank you for trusting BlueMind Web Service.",
+      "",
+      "Best regards,",
+      "BlueMind Web Service",
+    ].join("\n"),
+  };
+}
+
+export function buildClarificationRequestEmail(order, { message, employee }) {
+  return {
+    subject: `BlueMind - A Question About Your Project | Order ${order.orderNumber}`,
+    text: [
+      `Hello ${order.customerName || "there"},`,
+      "",
+      `We have a question about your BlueMind Web Service order ${order.orderNumber}.`,
+      "",
+      message,
+      "",
+      `Sent by: ${employee?.displayName || "BlueMind Team"}`,
+      "",
+      "Please reply to this email with the requested details.",
+      "",
+      "Best regards,",
+      "BlueMind Web Service",
     ].join("\n"),
   };
 }
@@ -251,40 +329,50 @@ export async function sendOrderReadyNotification(env, order) {
   return { sent: true };
 }
 
-export async function sendOrderPaymentNotifications(env, order) {
+export async function sendBusinessNewOrderNotification(env, order) {
   const config = getEmailConfig(env);
-  if (!config) {
-    console.warn("Order payment emails skipped: Resend is not configured");
-    return { customer: { sent: false, reason: "not_configured" }, business: { sent: false, reason: "not_configured" } };
-  }
-
-  const resend = getResendClient(config.apiKey);
-  const customerEmail = buildCustomerPaymentEmail(order);
-  const businessEmail = buildBusinessPaymentEmail(order);
-  const result = { customer: { sent: false }, business: { sent: false } };
-
-  const customer = await resend.emails.send({
-    from: config.from,
-    to: order.email,
-    replyTo: config.to,
-    subject: customerEmail.subject,
-    text: customerEmail.text,
-  });
-  if (customer.error) throw new Error(customer.error.message || "Customer order email failed");
-  result.customer = { sent: true };
-
-  const business = await resend.emails.send({
-    from: config.from,
+  if (!config) return { sent: false, reason: "not_configured" };
+  const email = buildBusinessPaymentEmail(order, env);
+  return await sendEmail(env, {
     to: config.to,
     replyTo: order.email,
-    subject: businessEmail.subject,
-    text: businessEmail.text,
+    subject: email.subject,
+    text: email.text,
   });
-  if (business.error) throw new Error(business.error.message || "Business order email failed");
-  result.business = { sent: true };
+}
 
+export async function sendCustomerPaymentConfirmation(env, order) {
+  const email = buildCustomerPaymentEmail(order);
+  return await sendEmail(env, {
+    to: order.email,
+    subject: email.subject,
+    text: email.text,
+  }, { customerFacing: true });
+}
+
+export async function sendCustomerReviewConfirmation(env, order) {
+  const email = buildCustomerReviewedEmail(order);
+  return await sendEmail(env, {
+    to: order.email,
+    subject: email.subject,
+    text: email.text,
+  }, { customerFacing: true });
+}
+
+export async function sendCustomerClarificationRequest(env, order, options) {
+  const email = buildClarificationRequestEmail(order, options);
+  return await sendEmail(env, {
+    to: order.email,
+    subject: email.subject,
+    text: email.text,
+  }, { customerFacing: true });
+}
+
+export async function sendOrderPaymentNotifications(env, order) {
+  const customer = await sendCustomerPaymentConfirmation(env, order);
+  const business = await sendBusinessNewOrderNotification(env, order);
   console.log("Order payment emails sent", { provider: "resend", orderNumber: order.orderNumber });
-  return result;
+  return { customer, business };
 }
 export async function sendEmailVerificationCode(env, { email, code, language = "en" }) {
   const config = getCustomerEmailConfig(env);

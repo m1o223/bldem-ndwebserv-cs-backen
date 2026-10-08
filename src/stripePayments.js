@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import Stripe from "stripe";
 import { createOrderFromVerifiedPayment, serializeOrder, validateWebsiteOrderDraft } from "./orders.js";
 import { calculatePaymentAmounts, formatSek, PAYMENT_OPTIONS } from "./pricing.js";
-import { sendOrderPaymentNotifications } from "./email.js";
+import { sendInitialOrderNotifications } from "./orderNotifications.js";
 import { verifyEmailToken } from "./emailVerification.js";
 
 export const STRIPE_PRICE_IDS = {
@@ -64,6 +64,7 @@ export function buildCheckoutDraft(body) {
     projectDescription: body?.projectDescription || body?.websiteDetails?.additionalNotes,
     requestedFeatures: body?.requestedFeatures,
     websiteDetails: body?.websiteDetails,
+    customerLanguage: body?.customerLanguage || body?.language,
   });
   const amounts = calculatePaymentAmounts(draft.packageId, draft.paymentOption);
   const priceId = getStripePriceId(draft.packageId, draft.paymentOption);
@@ -108,6 +109,7 @@ export async function createStripeCheckoutSession({ env, db, body }) {
     projectDescription: draft.projectDescription,
     requestedFeatures: draft.requestedFeatures,
     websiteDetails: draft.websiteDetails,
+    customerLanguage: draft.customerLanguage,
     stripePriceId: draft.stripePriceId,
     createdAt: now,
     updatedAt: now,
@@ -205,6 +207,7 @@ async function createOrderForPaidSession({ env, db, event, session }) {
     projectDescription: pending.projectDescription,
     requestedFeatures: pending.requestedFeatures,
     websiteDetails: pending.websiteDetails,
+    customerLanguage: pending.customerLanguage,
     paymentProvider: "stripe",
     paymentEventId: session.id,
     paymentReference: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id,
@@ -221,7 +224,7 @@ async function createOrderForPaidSession({ env, db, event, session }) {
 
     if (result.created) {
       try {
-        await sendOrderPaymentNotifications(env, result.order);
+        await sendInitialOrderNotifications(env, db, result.order);
       } catch (error) {
         console.error("Order payment email failed", { orderNumber: result.order.orderNumber, message: error?.message });
       }

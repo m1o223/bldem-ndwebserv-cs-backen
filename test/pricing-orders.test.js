@@ -69,6 +69,8 @@ test("verified payment builds a paid order with a price snapshot and project det
   assert.equal(order.amountPaidOre, 374500);
   assert.equal(order.remainingBalanceOre, 374500);
   assert.equal(order.paymentStatus, "Deposit Paid");
+  assert.equal(order.projectStatus, "Pending Review");
+  assert.equal(order.reviewStatus, "pending_review");
   assert.equal(order.verifiedEmail, "customer@example.com");
   assert.equal(order.priceSnapshot.packagePriceOre, 749000);
   assert.deepEqual(order.requestedFeatures, ["Contact Form", "Gallery"]);

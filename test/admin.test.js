@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
 import { createHealthServer } from "../src/server.js";
 import { createAdminSession } from "../src/adminAuth.js";
-import { buildOrderReadyEmail } from "../src/email.js";
+import { buildBusinessPaymentEmail, buildCustomerPaymentEmail, buildCustomerReviewedEmail, buildOrderReadyEmail } from "../src/email.js";
 import { createTestOrder, validateOrderStatus } from "../src/orders.js";
 import { ValidationError } from "../src/validation.js";
 
@@ -86,6 +86,9 @@ test("admin order routes are protected before database access", async () => {
 
 test("order status validation and ready email are shaped safely", () => {
   assert.equal(validateOrderStatus("Ready"), "Ready");
+  assert.equal(validateOrderStatus("Pending Review"), "Pending Review");
+  assert.equal(validateOrderStatus("Awaiting Clarification"), "Awaiting Clarification");
+  assert.equal(validateOrderStatus("Confirmed"), "Confirmed");
   assert.throws(() => validateOrderStatus("Unknown"), ValidationError);
 
   const order = createTestOrder();
@@ -96,6 +99,37 @@ test("order status validation and ready email are shaped safely", () => {
   assert.equal(email.subject, "Your BlueMind Web Service order #515 is ready");
   assert.match(email.text, /Ahmed Example/);
   assert.match(email.text, /E-commerce Website/);
+});
+
+test("paid order email copy separates payment confirmation from employee review confirmation", () => {
+  const order = createTestOrder();
+  const paidOrder = {
+    ...order,
+    orderNumber: "#516",
+    isPaidOrder: true,
+    projectStatus: "Pending Review",
+    paymentOption: "deposit",
+    totalAmountOre: 749000,
+    amountPaidOre: 374500,
+    remainingBalanceOre: 374500,
+    packageName: "Business Website",
+    requestedFeatures: ["Contact Form", "Gallery"],
+    createdAt: new Date("2026-10-08T10:00:00.000Z"),
+  };
+
+  const customer = buildCustomerPaymentEmail(paidOrder);
+  assert.match(customer.subject, /Payment Received/);
+  assert.match(customer.text, /team will review your requirements/);
+  assert.doesNotMatch(customer.text, /has now been confirmed by our team/);
+
+  const business = buildBusinessPaymentEmail(paidOrder, { ADMIN_FRONTEND_URL: "https://admin.example.com" });
+  assert.match(business.subject, /New Paid Website Order/);
+  assert.match(business.text, /Pending Review/);
+  assert.match(business.text, /https:\/\/admin\.example\.com/);
+
+  const reviewed = buildCustomerReviewedEmail(paidOrder);
+  assert.match(reviewed.subject, /Your Project Is Confirmed/);
+  assert.match(reviewed.text, /has now been confirmed by our team/);
 });
 
 test("admin presence routes are protected before database access", async () => {

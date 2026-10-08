@@ -14,6 +14,12 @@ import { getDatabase } from "./database.js";
 import { sendFormNotification, sendOrderReadyNotification } from "./email.js";
 import { requestEmailVerification, verifyEmailCode } from "./emailVerification.js";
 import {
+  createClarificationRequest,
+  sendClarificationRequestNotification,
+  sendOrderReviewConfirmationNotification,
+} from "./orderNotifications.js";
+import {
+  createOrderActivity,
   buildOrderSearchQuery,
   ensureOrderIndexes,
   normalizeOrderNumber,
@@ -117,6 +123,11 @@ function readRawBody(req, limitBytes = BODY_LIMIT_BYTES * 4) {
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
+}
+
+function cleanAdminMessage(value, maxLength = 2400) {
+  if (typeof value !== "string") return "";
+  return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
 async function ensureCollections(db) {
@@ -387,12 +398,37 @@ async function getAdminOrder(req, res, env, orderNumber) {
     res.setHeader("Allow", "GET, OPTIONS");
     return json(res, 405, { success: false, error: "Method not allowed" });
   }
-  if (!requireAdmin(req, res, env)) return;
+  const admin = requireAdmin(req, res, env);
+  if (!admin) return;
 
   const db = await getDatabase(env);
   await ensureCollections(db);
-  const order = await db.collection("orders").findOne({ orderNumber: normalizeOrderNumber(orderNumber) });
+  const collection = db.collection("orders");
+  const normalizedOrderNumber = normalizeOrderNumber(orderNumber);
+  let order = await collection.findOne({ orderNumber: normalizedOrderNumber });
   if (!order) return json(res, 404, { success: false, error: "Order not found." });
+
+  const hasViewed = Array.isArray(order.viewedBy) && order.viewedBy.some(item => item.employeeId === admin.employeeId);
+  if (!hasViewed) {
+    const viewedAt = new Date();
+    await collection.updateOne(
+      { _id: order._id },
+      {
+        $push: {
+          viewedBy: { employeeId: admin.employeeId, displayName: admin.displayName, viewedAt },
+          activity: createOrderActivity({
+            employeeId: admin.employeeId,
+            displayName: admin.displayName,
+            action: "order_viewed",
+            message: `${admin.displayName} viewed Order ${normalizedOrderNumber}.`,
+            createdAt: viewedAt,
+          }),
+        },
+        $set: { updatedAt: viewedAt },
+      },
+    );
+    order = await collection.findOne({ _id: order._id });
+  }
   return json(res, 200, { success: true, order: serializeOrder(order) });
 }
 
@@ -456,6 +492,109 @@ async function updateAdminOrderStatus(req, res, env, orderNumber) {
   return json(res, 200, { success: true, order: serializeOrder(updated), notification });
 }
 
+async function confirmAdminOrder(req, res, env, orderNumber) {
+  if (req.method !== "POST" && req.method !== "PATCH") {
+    res.setHeader("Allow", "POST, PATCH, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const admin = requireAdmin(req, res, env);
+  if (!admin) return;
+
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const collection = db.collection("orders");
+  const normalizedOrderNumber = normalizeOrderNumber(orderNumber);
+  const current = await collection.findOne({ orderNumber: normalizedOrderNumber });
+  if (!current) return json(res, 404, { success: false, error: "Order not found." });
+  if (!current.isPaidOrder || !current.paymentEventId || !["Paid", "Deposit Paid", "Partially Paid"].includes(current.paymentStatus)) {
+    return json(res, 400, { success: false, error: "Only verified paid orders can be confirmed." });
+  }
+
+  if (current.reviewStatus === "confirmed" || current.reviewedAt) {
+    return json(res, 200, {
+      success: true,
+      alreadyConfirmed: true,
+      order: serializeOrder(current),
+      notification: { sent: false, skipped: true, reason: "already_confirmed" },
+    });
+  }
+
+  const confirmedAt = new Date();
+  const reviewedBy = { employeeId: admin.employeeId, displayName: admin.displayName };
+  const activity = createOrderActivity({
+    employeeId: admin.employeeId,
+    displayName: admin.displayName,
+    action: "order_confirmed",
+    message: `${admin.displayName} confirmed Order ${current.orderNumber}. Order requirements reviewed and confirmed.`,
+    createdAt: confirmedAt,
+  });
+
+  await collection.updateOne(
+    { _id: current._id, $or: [{ reviewStatus: { $ne: "confirmed" } }, { reviewStatus: { $exists: false } }] },
+    {
+      $set: {
+        projectStatus: "Confirmed",
+        reviewStatus: "confirmed",
+        reviewedAt: confirmedAt,
+        reviewedBy,
+        updatedAt: confirmedAt,
+      },
+      $push: { activity },
+    },
+  );
+
+  const updated = await collection.findOne({ _id: current._id });
+  const notification = await sendOrderReviewConfirmationNotification(env, db, updated);
+  return json(res, 200, { success: true, order: serializeOrder(updated), notification });
+}
+
+async function requestOrderClarification(req, res, env, orderNumber) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+  const admin = requireAdmin(req, res, env);
+  if (!admin) return;
+
+  const body = await readJsonBody(req);
+  const message = cleanAdminMessage(body?.message);
+  if (!message) return json(res, 400, { success: false, error: "Please write a clarification message." });
+
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const collection = db.collection("orders");
+  const current = await collection.findOne({ orderNumber: normalizeOrderNumber(orderNumber) });
+  if (!current) return json(res, 404, { success: false, error: "Order not found." });
+  if (!current.isPaidOrder) return json(res, 400, { success: false, error: "Clarification can only be requested for real paid orders." });
+
+  const clarification = createClarificationRequest({ message, employee: admin });
+  const activity = createOrderActivity({
+    employeeId: admin.employeeId,
+    displayName: admin.displayName,
+    action: "clarification_requested",
+    message: `${admin.displayName} requested clarification for Order ${current.orderNumber}.`,
+    createdAt: clarification.createdAt,
+  });
+
+  await collection.updateOne(
+    { _id: current._id },
+    {
+      $set: { projectStatus: "Awaiting Clarification", updatedAt: clarification.createdAt },
+      $push: { clarificationRequests: clarification, activity },
+    },
+  );
+  const updated = await collection.findOne({ _id: current._id });
+  const notification = await sendClarificationRequestNotification(env, db, updated, {
+    message,
+    employee: admin,
+    requestId: clarification.requestId,
+  });
+  return json(res, 200, { success: true, order: serializeOrder(updated), notification });
+}
+
 export function createHealthServer(env = process.env) {
   const allowed = parseAllowedOrigins(env);
   const checkRateLimit = createRateLimiter();
@@ -478,8 +617,14 @@ export function createHealthServer(env = process.env) {
     const isStripeWebhookRoute = route === "/api/payments/stripe/webhook";
     const isEmailVerificationRoute = route === "/api/order-email-verification/send" || route === "/api/order-email-verification/verify";
     const stripeStatusMatch = route.match(/^\/api\/payments\/stripe\/sessions\/([^/]+)$/);
+    const adminOrderConfirmMatch = route.match(/^\/api\/admin\/orders\/([^/]+)\/confirm$/);
+    const adminOrderClarificationMatch = route.match(/^\/api\/admin\/orders\/([^/]+)\/clarification$/);
     const adminOrderMatch = route.match(/^\/api\/admin\/orders\/([^/]+)$/);
-    const allowedMethods = route === "/api/admin/orders" || adminOrderMatch
+    const allowedMethods = adminOrderConfirmMatch
+      ? "POST, PATCH, OPTIONS"
+      : adminOrderClarificationMatch
+        ? "POST, OPTIONS"
+        : route === "/api/admin/orders" || adminOrderMatch
       ? "GET, PATCH, OPTIONS"
       : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
 
@@ -549,6 +694,8 @@ export function createHealthServer(env = process.env) {
       if (route === "/api/admin/presence") return await handleAdminPresence(req, res, env);
       if (route === "/api/admin/presence/heartbeat") return await handleAdminPresenceHeartbeat(req, res, env);
       if (route === "/api/admin/orders") return await listAdminOrders(req, res, env, url);
+      if (adminOrderConfirmMatch) return await confirmAdminOrder(req, res, env, decodeURIComponent(adminOrderConfirmMatch[1]));
+      if (adminOrderClarificationMatch) return await requestOrderClarification(req, res, env, decodeURIComponent(adminOrderClarificationMatch[1]));
       if (adminOrderMatch) {
         const orderNumber = decodeURIComponent(adminOrderMatch[1]);
         return req.method === "PATCH"
