@@ -305,7 +305,10 @@ export async function sendEmailVerificationCode(env, { email, code, language = "
     html: emailContent.html,
   });
 
-  if (result.error) throw new Error(result.error.message || "Verification email failed");
+  if (result.error) {
+    console.error("Verification email provider rejected send", { message: result.error.message || "unknown_error" });
+    throw new Error(result.error.message || "Verification email failed");
+  }
   console.log("Email verification sent", { provider: "resend", id: result.data?.id ? "present" : "missing" });
   return { sent: true };
 }
