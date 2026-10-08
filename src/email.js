@@ -81,6 +81,51 @@ export function buildOrderReadyEmail(order) {
   };
 }
 
+function formatSekFromOre(value) {
+  if (!Number.isInteger(value)) return "Not provided";
+  return `${new Intl.NumberFormat("sv-SE").format(value / 100)} SEK`;
+}
+
+export function buildCustomerPaymentEmail(order) {
+  return {
+    subject: `BlueMind Web Service payment confirmed - ${order.orderNumber}`,
+    text: [
+      `Hello ${order.customerName || "there"},`,
+      "",
+      "Your BlueMind Web Service payment has been confirmed.",
+      line("Order number", order.orderNumber),
+      line("Package", order.packageName || order.package),
+      line("Amount paid", formatSekFromOre(order.amountPaidOre)),
+      line("Remaining balance", formatSekFromOre(order.remainingBalanceOre)),
+      line("Payment status", order.paymentStatus),
+      line("Project summary", order.projectDescription),
+      "",
+      "Our team will review your project details and contact you shortly.",
+    ].join("\n"),
+  };
+}
+
+export function buildBusinessPaymentEmail(order) {
+  return {
+    subject: `New BlueMind paid order - ${order.orderNumber}`,
+    text: [
+      "A new paid website order has been confirmed.",
+      "",
+      line("Order number", order.orderNumber),
+      line("Customer", order.customerName),
+      line("Email", order.email),
+      line("Company", order.companyName),
+      line("Package", order.packageName || order.package),
+      line("Payment option", order.paymentOption),
+      line("Amount paid", formatSekFromOre(order.amountPaidOre)),
+      line("Remaining balance", formatSekFromOre(order.remainingBalanceOre)),
+      line("Payment status", order.paymentStatus),
+      line("Stripe payment reference", order.paymentReference),
+      line("Project description", order.projectDescription),
+    ].join("\n"),
+  };
+}
+
 export function buildFormMailOptions(config, route, doc) {
   const email = route === "/api/contact" ? buildContactEmail(doc) : buildQuoteEmail(doc);
   return {
@@ -130,4 +175,40 @@ export async function sendOrderReadyNotification(env, order) {
   if (result.error) throw new Error(result.error.message || "Resend email send failed");
   console.log("Order ready email sent", { provider: "resend", orderNumber: order.orderNumber, id: result.data?.id ? "present" : "missing" });
   return { sent: true };
+}
+
+export async function sendOrderPaymentNotifications(env, order) {
+  const config = getEmailConfig(env);
+  if (!config) {
+    console.warn("Order payment emails skipped: Resend is not configured");
+    return { customer: { sent: false, reason: "not_configured" }, business: { sent: false, reason: "not_configured" } };
+  }
+
+  const resend = getResendClient(config.apiKey);
+  const customerEmail = buildCustomerPaymentEmail(order);
+  const businessEmail = buildBusinessPaymentEmail(order);
+  const result = { customer: { sent: false }, business: { sent: false } };
+
+  const customer = await resend.emails.send({
+    from: config.from,
+    to: order.email,
+    replyTo: config.to,
+    subject: customerEmail.subject,
+    text: customerEmail.text,
+  });
+  if (customer.error) throw new Error(customer.error.message || "Customer order email failed");
+  result.customer = { sent: true };
+
+  const business = await resend.emails.send({
+    from: config.from,
+    to: config.to,
+    replyTo: order.email,
+    subject: businessEmail.subject,
+    text: businessEmail.text,
+  });
+  if (business.error) throw new Error(business.error.message || "Business order email failed");
+  result.business = { sent: true };
+
+  console.log("Order payment emails sent", { provider: "resend", orderNumber: order.orderNumber });
+  return result;
 }

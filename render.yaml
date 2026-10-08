@@ -34,3 +34,9 @@ services:
         sync: false
       - key: ENABLE_ADMIN_NOTIFICATION_EMAILS
         value: "false"
+      - key: FRONTEND_URL
+        value: https://bluemind-web-service.vercel.app
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false

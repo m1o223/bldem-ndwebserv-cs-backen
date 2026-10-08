@@ -20,6 +20,12 @@ import {
   validateOrderStatus,
 } from "./orders.js";
 import { listActiveWebsitePackages } from "./pricing.js";
+import {
+  constructStripeEvent,
+  createStripeCheckoutSession,
+  getStripeCheckoutStatus,
+  handleStripeWebhookEvent,
+} from "./stripePayments.js";
 import { validateContactSubmission, validateQuoteSubmission, ValidationError } from "./validation.js";
 
 const BODY_LIMIT_BYTES = 32 * 1024;
@@ -94,6 +100,24 @@ function readJsonBody(req) {
   });
 }
 
+function readRawBody(req, limitBytes = BODY_LIMIT_BYTES * 4) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", chunk => {
+      size += Buffer.byteLength(chunk);
+      if (size > limitBytes) {
+        reject(Object.assign(new Error("Payload too large"), { statusCode: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 async function ensureCollections(db) {
   const existing = new Set((await db.listCollections({}, { nameOnly: true }).toArray()).map(collection => collection.name));
   for (const name of [
@@ -109,11 +133,14 @@ async function ensureCollections(db) {
     "orderEmailVerifications",
     "orderNotifications",
     "careSubscriptions",
+    "checkoutSessions",
   ]) {
     if (!existing.has(name)) await db.createCollection(name);
   }
   await ensureOrderIndexes(db);
   await db.collection("adminPresence").createIndex({ employeeId: 1 }, { unique: true });
+  await db.collection("checkoutSessions").createIndex({ stripeSessionId: 1 }, { unique: true, sparse: true });
+  await db.collection("checkoutSessions").createIndex({ email: 1, createdAt: -1 });
 }
 
 
@@ -189,6 +216,54 @@ async function handleFormRoute(req, res, env, route) {
     success: true,
     message: route === "/api/contact" ? "Message received successfully" : "Quote request received successfully"
   });
+}
+
+async function handleStripeCheckout(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+
+  const body = await readJsonBody(req);
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const checkout = await createStripeCheckoutSession({ env, db, body });
+  return json(res, 200, { success: true, checkout });
+}
+
+async function handleStripeCheckoutStatus(req, res, env, sessionId) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const status = await getStripeCheckoutStatus({ db, sessionId });
+  return json(res, 200, { success: true, ...status });
+}
+
+async function handleStripeWebhook(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const signature = req.headers["stripe-signature"];
+  if (typeof signature !== "string" || !signature) return json(res, 400, { success: false, error: "Missing Stripe signature" });
+  const rawBody = await readRawBody(req);
+  let event;
+  try {
+    event = constructStripeEvent(env, rawBody, signature);
+  } catch (error) {
+    return json(res, 400, { success: false, error: "Invalid Stripe signature" });
+  }
+
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const result = await handleStripeWebhookEvent({ env, db, event });
+  return json(res, 200, { success: true, received: true, result });
 }
 
 async function handleAdminLogin(req, res, env) {
@@ -362,10 +437,12 @@ export function createHealthServer(env = process.env) {
     const route = url.pathname;
     const isFormRoute = route === "/api/contact" || route === "/api/quote";
     const isAdminRoute = route.startsWith("/api/admin/");
+    const isStripeWebhookRoute = route === "/api/payments/stripe/webhook";
+    const stripeStatusMatch = route.match(/^\/api\/payments\/stripe\/sessions\/([^/]+)$/);
     const adminOrderMatch = route.match(/^\/api\/admin\/orders\/([^/]+)$/);
     const allowedMethods = route === "/api/admin/orders" || adminOrderMatch
       ? "GET, PATCH, OPTIONS"
-      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" ? "POST, OPTIONS" : "GET, OPTIONS");
+      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || isStripeWebhookRoute ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
@@ -378,6 +455,8 @@ export function createHealthServer(env = process.env) {
     if (isAdminRoute) res.setHeader("Access-Control-Allow-Credentials", "true");
 
     try {
+      if (isStripeWebhookRoute) return await handleStripeWebhook(req, res, env);
+
       if (route === "/api/health") {
         if (req.method !== "GET") {
           res.setHeader("Allow", "GET, OPTIONS");
@@ -393,6 +472,12 @@ export function createHealthServer(env = process.env) {
         }
         return json(res, 200, { success: true, packages: listActiveWebsitePackages() });
       }
+
+      if (route === "/api/payments/stripe/checkout") {
+        if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+        return await handleStripeCheckout(req, res, env);
+      }
+      if (stripeStatusMatch) return await handleStripeCheckoutStatus(req, res, env, decodeURIComponent(stripeStatusMatch[1]));
 
       if (route === "/api/admin/login") {
         if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
