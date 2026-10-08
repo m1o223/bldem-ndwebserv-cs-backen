@@ -511,11 +511,12 @@ async function confirmAdminOrder(req, res, env, orderNumber) {
   }
 
   if (current.reviewStatus === "confirmed" || current.reviewedAt) {
+    const notification = await sendOrderReviewConfirmationNotification(env, db, current);
     return json(res, 200, {
       success: true,
       alreadyConfirmed: true,
       order: serializeOrder(current),
-      notification: { sent: false, skipped: true, reason: "already_confirmed" },
+      notification,
     });
   }
 
