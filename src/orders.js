@@ -287,6 +287,7 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
   if (!/^#\d+$/.test(normalizedOrderNumber)) throw new ValidationError({ orderNumber: "A valid generated order number is required." });
 
   const isFullPayment = amounts.remainingBalanceOre === 0;
+  const isSandboxTestOrder = draft.packageId === "bluemind-test-package";
   const paymentProvider = cleanString(input.paymentProvider, 80) || "pending-provider";
   const paymentEventId = cleanString(input.paymentEventId, 180);
   const paymentReference = cleanString(input.paymentReference, 180);
@@ -307,7 +308,7 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
       paymentEventId,
       amountOre: amounts.amountDueNowOre,
       currency: amounts.currency,
-      message: isFullPayment ? "Full payment received." : "Deposit payment received.",
+      message: isSandboxTestOrder ? "Sandbox test payment received." : (isFullPayment ? "Full payment received." : "Deposit payment received."),
       createdAt,
     }),
   ];
@@ -348,12 +349,16 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
     deliveryDate: finalDeliveryDate,
     isDemo: false,
     isPaidOrder: true,
-    source: "payment_provider",
-    internalNotes: "",
+    isSandboxTestOrder,
+    testMode: isSandboxTestOrder ? "stripe_sandbox" : undefined,
+    source: isSandboxTestOrder ? "stripe_sandbox_test" : "payment_provider",
+    internalNotes: isSandboxTestOrder ? "Sandbox test order. Do not count as real customer revenue." : "",
     activity: [
       createOrderActivity({
         action: "order_created",
-        message: `System created ${normalizedOrderNumber} after verified ${paymentProvider} payment. Project is pending employee review.`,
+        message: isSandboxTestOrder
+          ? `System created ${normalizedOrderNumber} after verified Stripe Sandbox test payment. Project is pending employee review.`
+          : `System created ${normalizedOrderNumber} after verified ${paymentProvider} payment. Project is pending employee review.`,
         createdAt,
       }),
     ],
@@ -361,8 +366,8 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
     notificationStatus: {},
     clarificationRequests: [],
     careEligibility: {
-      eligible: true,
-      reason: "paid_website_order",
+      eligible: !isSandboxTestOrder,
+      reason: isSandboxTestOrder ? "sandbox_test_order" : "paid_website_order",
     },
     createdAt,
     updatedAt: createdAt,
@@ -504,6 +509,8 @@ export function serializeOrder(order) {
     careEligibility: order.careEligibility,
     isDemo: Boolean(order.isDemo),
     isPaidOrder: Boolean(order.isPaidOrder),
+    isSandboxTestOrder: Boolean(order.isSandboxTestOrder),
+    testMode: order.testMode,
     createdAt: order.createdAt instanceof Date ? order.createdAt.toISOString() : order.createdAt,
     updatedAt: order.updatedAt instanceof Date ? order.updatedAt.toISOString() : order.updatedAt,
   };

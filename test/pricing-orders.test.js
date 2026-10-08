@@ -38,6 +38,16 @@ test("website pricing catalog matches the agreed package prices", () => {
   }
 });
 
+test("test package is available only through the full-payment sandbox path", () => {
+  const publicActive = listActiveWebsitePackages();
+  const withTest = listActiveWebsitePackages({ includeTestPackages: true });
+  assert.equal(publicActive.some(item => item.packageId === "bluemind-test-package"), false);
+  assert.equal(withTest.some(item => item.packageId === "bluemind-test-package"), true);
+  assert.equal(calculatePaymentAmounts("bluemind-test-package", "full").amountDueNowOre, 1000);
+  assert.equal(calculatePaymentAmounts("bluemind-test-package", "full").remainingBalanceOre, 0);
+  assert.throws(() => calculatePaymentAmounts("bluemind-test-package", "deposit"), /Test package only supports full payment/);
+});
+
 test("custom quote package and invalid package ids cannot produce payment amounts", () => {
   assert.throws(() => calculatePaymentAmounts("custom-website", "full"), /Invalid fixed-price package/);
   assert.throws(() => calculatePaymentAmounts("missing-package", "full"), /Invalid fixed-price package/);
@@ -76,6 +86,31 @@ test("verified payment builds a paid order with a price snapshot and project det
   assert.deepEqual(order.requestedFeatures, ["Contact Form", "Gallery"]);
   assert.equal(order.events[0].type, "deposit_received");
   assert.equal(order.careEligibility.eligible, true);
+});
+
+test("verified Stripe Sandbox test payment builds a separated test order", () => {
+  const order = buildOrderDocumentFromVerifiedPayment({
+    packageId: "bluemind-test-package",
+    paymentOption: "full",
+    customerName: "Test Customer",
+    verifiedEmail: "test.customer@example.com",
+    projectDescription: "Verify the complete BlueMind order pipeline.",
+    requestedFeatures: ["Secure checkout test", "Email notifications"],
+    paymentProvider: "stripe",
+    paymentEventId: "evt_test_package",
+    paymentReference: "pi_test_package",
+  }, { orderNumber: "#600", paidAt: new Date("2026-10-08T11:00:00.000Z") });
+
+  assert.equal(order.packageId, "bluemind-test-package");
+  assert.equal(order.totalAmountOre, 1000);
+  assert.equal(order.amountPaidOre, 1000);
+  assert.equal(order.remainingBalanceOre, 0);
+  assert.equal(order.paymentStatus, "Paid");
+  assert.equal(order.projectStatus, "Pending Review");
+  assert.equal(order.isSandboxTestOrder, true);
+  assert.equal(order.source, "stripe_sandbox_test");
+  assert.equal(order.careEligibility.eligible, false);
+  assert.match(order.internalNotes, /Sandbox test order/);
 });
 
 test("verified payment order creation rejects missing critical fields", () => {

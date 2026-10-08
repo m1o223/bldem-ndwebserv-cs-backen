@@ -5,6 +5,10 @@ import { calculatePaymentAmounts, formatSek, PAYMENT_OPTIONS } from "./pricing.j
 import { sendInitialOrderNotifications } from "./orderNotifications.js";
 import { verifyEmailToken } from "./emailVerification.js";
 
+export const STRIPE_PRODUCT_IDS = {
+  "bluemind-test-package": "prod_VP2p2OZHU1Eiui",
+};
+
 export const STRIPE_PRICE_IDS = {
   "one-page-website": {
     full: "price_1UOBpgIO0JggS4KFPhchQ8wi",
@@ -25,6 +29,9 @@ export const STRIPE_PRICE_IDS = {
   "online-store": {
     full: "price_1UOBq9IO0JggS4KF8edENRhP",
     deposit: "price_1UOBqlIO0JggS4KFxaTaFXDp",
+  },
+  "bluemind-test-package": {
+    full: "price_1UOEk9IO0JggS4KF8za1GpDy",
   },
 };
 
@@ -130,12 +137,14 @@ export async function createStripeCheckoutSession({ env, db, body }) {
       paymentOption: draft.paymentOption,
       expectedAmountOre: String(draft.amounts.amountDueNowOre),
       currency: draft.amounts.currency,
+      testOnly: draft.packageId === "bluemind-test-package" ? "true" : "false",
     },
     payment_intent_data: {
       metadata: {
         pendingCheckoutId,
         packageId: draft.packageId,
         paymentOption: draft.paymentOption,
+        testOnly: draft.packageId === "bluemind-test-package" ? "true" : "false",
       },
     },
   });

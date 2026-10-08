@@ -132,6 +132,36 @@ test("paid order email copy separates payment confirmation from employee review 
   assert.match(reviewed.text, /has now been confirmed by our team/);
 });
 
+test("sandbox test order email copy is marked as test mode", () => {
+  const testOrder = {
+    ...createTestOrder(),
+    orderNumber: "#600",
+    packageId: "bluemind-test-package",
+    packageName: "BlueMind Test Package",
+    package: "BlueMind Test Package",
+    customerName: "Test Customer",
+    email: "test.customer@example.com",
+    isPaidOrder: true,
+    isSandboxTestOrder: true,
+    testMode: "stripe_sandbox",
+    totalAmountOre: 1000,
+    amountPaidOre: 1000,
+    remainingBalanceOre: 0,
+    paymentStatus: "Paid",
+    projectStatus: "Pending Review",
+  };
+
+  const customer = buildCustomerPaymentEmail(testOrder);
+  assert.equal(customer.subject, "BlueMind - Test Payment Confirmed");
+  assert.match(customer.text, /Sandbox Test Only/);
+  assert.match(customer.text, /10 SEK/);
+
+  const business = buildBusinessPaymentEmail(testOrder, { ADMIN_FRONTEND_URL: "https://admin.example.com" });
+  assert.equal(business.subject, "BlueMind - New Test Order Received");
+  assert.match(business.text, /NEW SANDBOX TEST ORDER RECEIVED/);
+  assert.match(business.text, /do not count as real customer revenue/);
+});
+
 test("admin presence routes are protected before database access", async () => {
   await withServer(async base => {
     const presence = await fetch(`${base}/api/admin/presence`);

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import Stripe from "stripe";
 import {
   STRIPE_PRICE_IDS,
+  STRIPE_PRODUCT_IDS,
   buildCheckoutDraft,
   constructStripeEvent,
   getStripePriceId,
@@ -22,6 +23,23 @@ test("Stripe price mapping contains full and deposit prices for every fixed webs
     assert.match(getStripePriceId(packageId, "deposit"), /^price_/);
     assert.notEqual(STRIPE_PRICE_IDS[packageId].full, STRIPE_PRICE_IDS[packageId].deposit);
   }
+});
+
+test("Stripe mapping contains the BlueMind test package product and one-time price", () => {
+  assert.match(STRIPE_PRODUCT_IDS["bluemind-test-package"], /^prod_/);
+  assert.match(getStripePriceId("bluemind-test-package", "full"), /^price_/);
+  assert.throws(() => getStripePriceId("bluemind-test-package", "deposit"), /Package is not configured for Stripe Checkout/);
+
+  const draft = buildCheckoutDraft({
+    packageId: "bluemind-test-package",
+    paymentOption: "full",
+    customerName: "Test Customer",
+    verifiedEmail: "customer@example.com",
+    projectDescription: "Verify the test purchase flow.",
+  });
+  assert.equal(draft.amounts.totalAmountOre, 1000);
+  assert.equal(draft.amounts.amountDueNowOre, 1000);
+  assert.equal(draft.amounts.remainingBalanceOre, 0);
 });
 
 test("checkout draft validates package, payment option, email, project description, and amounts", () => {

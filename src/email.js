@@ -185,7 +185,30 @@ function paymentTypeLabel(order) {
   return order.paymentOption === "deposit" ? "50% Deposit" : "Full";
 }
 
+function isSandboxTestOrder(order) {
+  return Boolean(order?.isSandboxTestOrder) || order?.packageId === "bluemind-test-package" || order?.testMode === "stripe_sandbox";
+}
+
 export function buildCustomerPaymentEmail(order) {
+  if (isSandboxTestOrder(order)) {
+    return {
+      subject: "BlueMind - Test Payment Confirmed",
+      text: [
+        `Hello ${order.customerName || "there"},`,
+        "",
+        "Your BlueMind Sandbox test payment was confirmed.",
+        "",
+        line("Order Number", order.orderNumber),
+        line("Package", order.packageName || order.package || "BlueMind Test Package"),
+        line("Amount paid", formatSekFromOre(order.amountPaidOre)),
+        "Payment Status: Paid",
+        "Test Mode: Sandbox Test Only - No real payment was charged.",
+        "",
+        "BlueMind Web Service",
+      ].join("\n"),
+    };
+  }
+
   return {
     subject: `BlueMind - Payment Received | Order ${order.orderNumber}`,
     text: [
@@ -213,6 +236,26 @@ export function buildCustomerPaymentEmail(order) {
 
 export function buildBusinessPaymentEmail(order, env = {}) {
   const adminUrl = getAdminDashboardUrl(env, order.orderNumber);
+  if (isSandboxTestOrder(order)) {
+    return {
+      subject: "BlueMind - New Test Order Received",
+      text: [
+        "NEW SANDBOX TEST ORDER RECEIVED",
+        "",
+        line("Order Number", order.orderNumber),
+        line("Customer", order.customerName),
+        line("Customer Email", order.email),
+        line("Package", order.packageName || order.package || "BlueMind Test Package"),
+        line("Payment Amount", formatSekFromOre(order.amountPaidOre)),
+        "Payment Status: Paid",
+        "Project Status: Pending Review",
+        "Test Mode: Sandbox Test Only - do not count as real customer revenue.",
+        "",
+        `View Order in Admin Dashboard: ${adminUrl}`,
+      ].join("\n"),
+    };
+  }
+
   return {
     subject: `New Paid Website Order - BlueMind ${order.orderNumber}`,
     text: [

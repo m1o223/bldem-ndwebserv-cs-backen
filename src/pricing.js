@@ -82,6 +82,23 @@ export const WEBSITE_PACKAGE_CATALOG = [
     ],
   },
   {
+    packageId: "bluemind-test-package",
+    aliases: ["test-package", "sandbox-test"],
+    name: "BlueMind Test Package",
+    totalAmountOre: 1000,
+    currency: CURRENCY,
+    estimatedDelivery: "Sandbox test only",
+    active: true,
+    testOnly: true,
+    features: [
+      "Secure checkout test",
+      "Payment confirmation",
+      "Order tracking",
+      "Email notifications",
+      "Admin Dashboard integration",
+    ],
+  },
+  {
     packageId: "custom-website",
     aliases: ["custom"],
     name: "Custom Website",
@@ -100,8 +117,10 @@ for (const item of WEBSITE_PACKAGE_CATALOG) {
   for (const alias of item.aliases || []) PACKAGE_BY_ID.set(alias, item);
 }
 
-export function listActiveWebsitePackages() {
-  return WEBSITE_PACKAGE_CATALOG.filter(item => item.active).map(toPublicPackage);
+export function listActiveWebsitePackages({ includeTestPackages = false } = {}) {
+  return WEBSITE_PACKAGE_CATALOG
+    .filter(item => item.active && (includeTestPackages || !item.testOnly))
+    .map(toPublicPackage);
 }
 
 export function getWebsitePackage(packageId) {
@@ -118,6 +137,7 @@ export function toPublicPackage(item) {
     estimatedDelivery: item.estimatedDelivery,
     active: item.active,
     requestQuoteOnly: Boolean(item.requestQuoteOnly),
+    testOnly: Boolean(item.testOnly),
     features: [...item.features],
   };
 }
@@ -139,6 +159,10 @@ export function normalizePaymentOption(value) {
 export function calculatePaymentAmounts(packageId, paymentOption) {
   const item = validateFixedPricePackage(packageId);
   const option = normalizePaymentOption(paymentOption);
+  if (item.testOnly && option !== PAYMENT_OPTIONS.FULL) {
+    throw new Error("Test package only supports full payment.");
+  }
+
   const totalAmountOre = item.totalAmountOre;
   const amountDueNowOre = option === PAYMENT_OPTIONS.FULL
     ? totalAmountOre
