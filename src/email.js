@@ -1,9 +1,7 @@
 import { Resend } from "resend";
 
 const BUSINESS_EMAIL = "admin@xn--bluemndwebservice-gvc.com";
-const PUBLIC_CONTACT_EMAIL = "contact@bluemindwebservice.com";
 const DEFAULT_SENDER = "BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>";
-const DEFAULT_CUSTOMER_SENDER = `BlueMind Web Service <${PUBLIC_CONTACT_EMAIL}>`;
 
 let resendClient;
 let activeApiKey;
@@ -24,8 +22,8 @@ function getCustomerEmailConfig(env) {
 
   return {
     ...config,
-    from: env.EMAIL_VERIFICATION_FROM || env.CUSTOMER_EMAIL_FROM || DEFAULT_CUSTOMER_SENDER,
-    replyTo: env.EMAIL_VERIFICATION_REPLY_TO || env.CUSTOMER_EMAIL_REPLY_TO || PUBLIC_CONTACT_EMAIL,
+    from: env.EMAIL_VERIFICATION_FROM || env.CUSTOMER_EMAIL_FROM || config.from,
+    replyTo: env.EMAIL_VERIFICATION_REPLY_TO || env.CUSTOMER_EMAIL_REPLY_TO || config.to,
   };
 }
 
