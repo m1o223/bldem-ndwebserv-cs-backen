@@ -12,6 +12,15 @@ import {
 } from "./adminAuth.js";
 import { getDatabase } from "./database.js";
 import { sendFormNotification, sendOrderReadyNotification } from "./email.js";
+import {
+  cancelCareSubscription,
+  createCareStripeCheckoutSession,
+  getCareCheckoutStatus,
+  handleCareStripeWebhookEvent,
+  listAdminCareSubscriptions,
+  listCareSubscriptionsForVerifiedEmail,
+} from "./careSubscriptions.js";
+import { listCarePlans } from "./carePricing.js";
 import { requestEmailVerification, verifyEmailCode } from "./emailVerification.js";
 import {
   createClarificationRequest,
@@ -145,6 +154,8 @@ async function ensureCollections(db) {
     "orderEmailVerifications",
     "orderNotifications",
     "careSubscriptions",
+    "careSubscriptionCheckouts",
+    "careNotifications",
     "checkoutSessions",
   ]) {
     if (!existing.has(name)) await db.createCollection(name);
@@ -153,6 +164,12 @@ async function ensureCollections(db) {
   await db.collection("adminPresence").createIndex({ employeeId: 1 }, { unique: true });
   await db.collection("checkoutSessions").createIndex({ stripeSessionId: 1 }, { unique: true, sparse: true });
   await db.collection("checkoutSessions").createIndex({ email: 1, createdAt: -1 });
+  await db.collection("careSubscriptionCheckouts").createIndex({ stripeSessionId: 1 }, { unique: true, sparse: true });
+  await db.collection("careSubscriptionCheckouts").createIndex({ customerEmail: 1, createdAt: -1 });
+  await db.collection("careSubscriptions").createIndex({ stripeSubscriptionId: 1 }, { unique: true, sparse: true });
+  await db.collection("careSubscriptions").createIndex({ customerEmail: 1, updatedAt: -1 });
+  await db.collection("careSubscriptions").createIndex({ orderNumber: 1, planId: 1, testMode: 1 });
+  await db.collection("careNotifications").createIndex({ subscriptionId: 1, type: 1, dedupeKey: 1 }, { unique: true });
 }
 
 
@@ -294,6 +311,67 @@ async function handleStripeCheckoutStatus(req, res, env, sessionId) {
   return json(res, 200, { success: true, ...status });
 }
 
+async function handleCareStripeCheckout(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+  const body = await readJsonBody(req);
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const checkout = await createCareStripeCheckoutSession({ env, db, body });
+  return json(res, 200, { success: true, checkout });
+}
+
+async function handleCareCheckoutStatus(req, res, env, sessionId) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const status = await getCareCheckoutStatus({ db, sessionId });
+  return json(res, 200, { success: true, ...status });
+}
+
+async function handleCareManageList(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+  const body = await readJsonBody(req);
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const result = await listCareSubscriptionsForVerifiedEmail({
+    db,
+    email: body?.email,
+    checkoutAttemptId: body?.checkoutAttemptId,
+    token: body?.emailVerificationToken,
+  });
+  return json(res, 200, { success: true, ...result });
+}
+
+async function handleCareCancel(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) {
+    return json(res, 415, { success: false, error: "Content-Type must be application/json" });
+  }
+  const body = await readJsonBody(req);
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const result = await cancelCareSubscription({ env, db, body });
+  return json(res, 200, { success: true, ...result });
+}
+
 async function handleStripeWebhook(req, res, env) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -311,7 +389,14 @@ async function handleStripeWebhook(req, res, env) {
 
   const db = await getDatabase(env);
   await ensureCollections(db);
-  const result = await handleStripeWebhookEvent({ env, db, event });
+  const object = event.data?.object || {};
+  const isCareSubscriptionEvent = object?.metadata?.kind === "care_subscription"
+    || object?.mode === "subscription"
+    || event.type.startsWith("customer.subscription.")
+    || (event.type.startsWith("invoice.") && object?.subscription);
+  const result = isCareSubscriptionEvent
+    ? await handleCareStripeWebhookEvent({ env, db, event })
+    : await handleStripeWebhookEvent({ env, db, event });
   return json(res, 200, { success: true, received: true, result });
 }
 
@@ -391,6 +476,18 @@ async function listAdminOrders(req, res, env, url) {
     .toArray();
 
   return json(res, 200, { success: true, orders: orders.map(serializeOrder) });
+}
+
+async function listAdminCare(req, res, env, url) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  if (!requireAdmin(req, res, env)) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const subscriptions = await listAdminCareSubscriptions({ db, search: url.searchParams.get("search") || "" });
+  return json(res, 200, { success: true, subscriptions });
 }
 
 async function getAdminOrder(req, res, env, orderNumber) {
@@ -618,6 +715,7 @@ export function createHealthServer(env = process.env) {
     const isStripeWebhookRoute = route === "/api/payments/stripe/webhook";
     const isEmailVerificationRoute = route === "/api/order-email-verification/send" || route === "/api/order-email-verification/verify";
     const stripeStatusMatch = route.match(/^\/api\/payments\/stripe\/sessions\/([^/]+)$/);
+    const careStatusMatch = route.match(/^\/api\/care\/stripe\/sessions\/([^/]+)$/);
     const adminOrderConfirmMatch = route.match(/^\/api\/admin\/orders\/([^/]+)\/confirm$/);
     const adminOrderClarificationMatch = route.match(/^\/api\/admin\/orders\/([^/]+)\/clarification$/);
     const adminOrderMatch = route.match(/^\/api\/admin\/orders\/([^/]+)$/);
@@ -627,7 +725,7 @@ export function createHealthServer(env = process.env) {
         ? "POST, OPTIONS"
         : route === "/api/admin/orders" || adminOrderMatch
       ? "GET, PATCH, OPTIONS"
-      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
+      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || route === "/api/care/stripe/checkout" || route === "/api/care/subscriptions/manage" || route === "/api/care/subscriptions/cancel" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
@@ -658,6 +756,14 @@ export function createHealthServer(env = process.env) {
         return json(res, 200, { success: true, packages: listActiveWebsitePackages() });
       }
 
+      if (route === "/api/care/plans") {
+        if (req.method !== "GET") {
+          res.setHeader("Allow", "GET, OPTIONS");
+          return json(res, 405, { success: false, error: "Method not allowed" });
+        }
+        return json(res, 200, { success: true, plans: listCarePlans() });
+      }
+
       if (route === "/api/order-email-verification/send") {
         if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
         return await handleEmailVerificationSend(req, res, env);
@@ -672,6 +778,19 @@ export function createHealthServer(env = process.env) {
         return await handleStripeCheckout(req, res, env);
       }
       if (stripeStatusMatch) return await handleStripeCheckoutStatus(req, res, env, decodeURIComponent(stripeStatusMatch[1]));
+      if (route === "/api/care/stripe/checkout") {
+        if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+        return await handleCareStripeCheckout(req, res, env);
+      }
+      if (careStatusMatch) return await handleCareCheckoutStatus(req, res, env, decodeURIComponent(careStatusMatch[1]));
+      if (route === "/api/care/subscriptions/manage") {
+        if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+        return await handleCareManageList(req, res, env);
+      }
+      if (route === "/api/care/subscriptions/cancel") {
+        if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+        return await handleCareCancel(req, res, env);
+      }
 
       if (route === "/api/admin/login") {
         if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
@@ -695,6 +814,7 @@ export function createHealthServer(env = process.env) {
       if (route === "/api/admin/presence") return await handleAdminPresence(req, res, env);
       if (route === "/api/admin/presence/heartbeat") return await handleAdminPresenceHeartbeat(req, res, env);
       if (route === "/api/admin/orders") return await listAdminOrders(req, res, env, url);
+      if (route === "/api/admin/care-subscriptions") return await listAdminCare(req, res, env, url);
       if (adminOrderConfirmMatch) return await confirmAdminOrder(req, res, env, decodeURIComponent(adminOrderConfirmMatch[1]));
       if (adminOrderClarificationMatch) return await requestOrderClarification(req, res, env, decodeURIComponent(adminOrderClarificationMatch[1]));
       if (adminOrderMatch) {

@@ -417,6 +417,103 @@ export async function sendOrderPaymentNotifications(env, order) {
   console.log("Order payment emails sent", { provider: "resend", orderNumber: order.orderNumber });
   return { customer, business };
 }
+
+function careBillingLabel(subscription) {
+  return subscription.billingInterval === "yearly" ? "Yearly" : "Monthly";
+}
+
+export function buildCareSubscriptionCustomerEmail(subscription, { action = "activated" } = {}) {
+  const paidThrough = subscription.currentPeriodEnd ? new Date(subscription.currentPeriodEnd).toISOString().slice(0, 10) : "Not available";
+  if (action === "cancelled") {
+    return {
+      subject: `BlueMind Care - Future renewal cancelled | ${subscription.planName}`,
+      text: [
+        `Hello ${subscription.customerName || "there"},`,
+        "",
+        "Your BlueMind Care future renewal has been cancelled.",
+        "",
+        line("Plan", subscription.planName),
+        line("Billing", careBillingLabel(subscription)),
+        line("Connected order", subscription.orderNumber),
+        line("Paid-through date", paidThrough),
+        "",
+        "Your service remains active until the end of the current paid period.",
+        "No additional renewal payment will be taken for this subscription.",
+        "",
+        "BlueMind Web Service",
+      ].join("\n"),
+    };
+  }
+
+  return {
+    subject: `BlueMind Care activated | ${subscription.planName}`,
+    text: [
+      `Hello ${subscription.customerName || "there"},`,
+      "",
+      "Your BlueMind Care subscription is active.",
+      "",
+      line("Plan", subscription.planName),
+      line("Billing", careBillingLabel(subscription)),
+      line("Price", formatSekFromOre(subscription.amountOre)),
+      line("Connected order", subscription.orderNumber),
+      line("Paid-through date", paidThrough),
+      subscription.billingInterval === "yearly" ? "Annual billing: you paid the discounted annual amount upfront and receive 12 months of service." : "Monthly billing renews automatically each month until cancelled.",
+      "",
+      "BlueMind Web Service",
+    ].join("\n"),
+  };
+}
+
+export function buildCareSubscriptionBusinessEmail(subscription, env = {}, { action = "activated" } = {}) {
+  const adminUrl = getAdminDashboardUrl(env, subscription.orderNumber);
+  return {
+    subject: action === "cancelled"
+      ? `BlueMind Care renewal cancelled - ${subscription.orderNumber}`
+      : `New BlueMind Care subscription - ${subscription.orderNumber}`,
+    text: [
+      action === "cancelled" ? "BLUEMIND CARE FUTURE RENEWAL CANCELLED" : "NEW BLUEMIND CARE SUBSCRIPTION",
+      "",
+      line("Customer", subscription.customerName),
+      line("Customer Email", subscription.customerEmail),
+      line("Connected Order", subscription.orderNumber),
+      line("Plan", subscription.planName),
+      line("Billing", careBillingLabel(subscription)),
+      line("Price", formatSekFromOre(subscription.amountOre)),
+      line("Status", subscription.status),
+      line("Paid-through date", subscription.currentPeriodEnd ? new Date(subscription.currentPeriodEnd).toISOString() : ""),
+      line("Cancellation reason", subscription.cancellation?.reason),
+      "",
+      `View Order in Admin Dashboard: ${adminUrl}`,
+    ].join("\n"),
+  };
+}
+
+export async function sendCareSubscriptionCustomerEmail(env, subscription, options) {
+  const email = buildCareSubscriptionCustomerEmail(subscription, options);
+  return await sendEmail(env, {
+    to: subscription.customerEmail,
+    subject: email.subject,
+    text: email.text,
+  }, { customerFacing: true });
+}
+
+export async function sendCareSubscriptionBusinessEmail(env, subscription, options) {
+  const config = getEmailConfig(env);
+  if (!config) return { sent: false, reason: "not_configured" };
+  const email = buildCareSubscriptionBusinessEmail(subscription, env, options);
+  return await sendEmail(env, {
+    to: config.to,
+    replyTo: subscription.customerEmail,
+    subject: email.subject,
+    text: email.text,
+  });
+}
+
+export async function sendCareSubscriptionEmails(env, subscription, options) {
+  const customer = await sendCareSubscriptionCustomerEmail(env, subscription, options);
+  const business = await sendCareSubscriptionBusinessEmail(env, subscription, options);
+  return { customer, business };
+}
 export async function sendEmailVerificationCode(env, { email, code, language = "en" }) {
   const config = getCustomerEmailConfig(env);
   if (!config) {

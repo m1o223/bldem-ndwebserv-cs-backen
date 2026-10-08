@@ -6,6 +6,11 @@ import {
   listActiveWebsitePackages,
 } from "../src/pricing.js";
 import {
+  calculateCarePrice,
+  getCareStripePriceId,
+  listCarePlans,
+} from "../src/carePricing.js";
+import {
   buildCareSubscriptionDraft,
   buildOrderDocumentFromVerifiedPayment,
   createTestOrder,
@@ -151,6 +156,39 @@ test("BlueMind Care subscription draft requires order ownership inputs", () => {
     orderNumber: "512",
     customerEmail: "customer@example.com",
   }), ValidationError);
+});
+
+test("BlueMind Care pricing uses monthly billing and upfront annual billing", () => {
+  const plans = listCarePlans();
+  assert.equal(plans.length, 3);
+
+  const expected = [
+    ["care-basic", 25000, 250000],
+    ["care-plus", 50000, 500000],
+    ["care-pro", 80000, 800000],
+  ];
+  for (const [planId, monthlyOre, yearlyOre] of expected) {
+    const monthly = calculateCarePrice(planId, "monthly");
+    const yearly = calculateCarePrice(planId, "yearly");
+    assert.equal(monthly.amountOre, monthlyOre);
+    assert.equal(monthly.coverageMonths, 1);
+    assert.equal(yearly.amountOre, yearlyOre);
+    assert.equal(yearly.regularAnnualAmountOre, monthlyOre * 12);
+    assert.equal(yearly.annualSavingsOre, monthlyOre * 2);
+    assert.equal(yearly.coverageMonths, 12);
+    assert.match(getCareStripePriceId(planId, "monthly"), /^price_/);
+    assert.match(getCareStripePriceId(planId, "yearly"), /^price_/);
+  }
+});
+
+test("BlueMind Care sandbox test prices are separate from real plan prices", () => {
+  const monthly = calculateCarePrice("care-plus", "monthly", { testMode: true });
+  const yearly = calculateCarePrice("care-plus", "yearly", { testMode: true });
+  assert.equal(monthly.amountOre, 500);
+  assert.equal(yearly.amountOre, 500);
+  assert.equal(monthly.planId, "care-plus");
+  assert.equal(yearly.testMode, true);
+  assert.match(getCareStripePriceId("care-plus", "monthly", { testMode: true }), /^price_/);
 });
 
 class FakeCounterCollection {

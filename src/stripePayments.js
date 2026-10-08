@@ -42,7 +42,7 @@ function cleanString(value, maxLength = 1000) {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
-function getStripe(env) {
+export function getStripe(env) {
   const key = cleanString(env.STRIPE_SECRET_KEY, 300);
   if (!key) throw Object.assign(new Error("Stripe is not configured."), { statusCode: 503 });
   if (key.startsWith("sk_live_")) throw Object.assign(new Error("Live Stripe keys are not allowed for this test-mode integration."), { statusCode: 503 });
