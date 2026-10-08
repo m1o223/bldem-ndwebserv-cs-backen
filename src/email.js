@@ -1,7 +1,9 @@
 import { Resend } from "resend";
 
 const BUSINESS_EMAIL = "admin@xn--bluemndwebservice-gvc.com";
+const PUBLIC_CONTACT_EMAIL = "contact@bluemindwebservice.com";
 const DEFAULT_SENDER = "BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>";
+const DEFAULT_CUSTOMER_SENDER = `BlueMind Web Service <${PUBLIC_CONTACT_EMAIL}>`;
 
 let resendClient;
 let activeApiKey;
@@ -14,6 +16,17 @@ function getEmailConfig(env) {
   if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) return null;
 
   return { apiKey: apiKey.trim(), from, to };
+}
+
+function getCustomerEmailConfig(env) {
+  const config = getEmailConfig(env);
+  if (!config) return null;
+
+  return {
+    ...config,
+    from: env.EMAIL_VERIFICATION_FROM || env.CUSTOMER_EMAIL_FROM || DEFAULT_CUSTOMER_SENDER,
+    replyTo: env.EMAIL_VERIFICATION_REPLY_TO || env.CUSTOMER_EMAIL_REPLY_TO || PUBLIC_CONTACT_EMAIL,
+  };
 }
 
 function getResendClient(apiKey) {
@@ -276,7 +289,7 @@ export async function sendOrderPaymentNotifications(env, order) {
   return result;
 }
 export async function sendEmailVerificationCode(env, { email, code, language = "en" }) {
-  const config = getEmailConfig(env);
+  const config = getCustomerEmailConfig(env);
   if (!config) {
     console.warn("Email verification skipped: Resend is not configured");
     throw new Error("Resend is not configured");
@@ -286,7 +299,7 @@ export async function sendEmailVerificationCode(env, { email, code, language = "
   const result = await getResendClient(config.apiKey).emails.send({
     from: config.from,
     to: email,
-    replyTo: config.to,
+    replyTo: config.replyTo,
     subject: emailContent.subject,
     text: emailContent.text,
     html: emailContent.html,
