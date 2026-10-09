@@ -2,7 +2,8 @@ export const CURRENCY = "SEK";
 
 export const PAYMENT_OPTIONS = {
   FULL: "full",
-  DEPOSIT: "deposit",
+  DEPOSIT_50: "deposit_50",
+  DEPOSIT_25: "deposit_25",
 };
 
 export const WEBSITE_PACKAGE_CATALOG = [
@@ -152,8 +153,15 @@ export function validateFixedPricePackage(packageId) {
 
 export function normalizePaymentOption(value) {
   if (value === PAYMENT_OPTIONS.FULL || value === "pay_full") return PAYMENT_OPTIONS.FULL;
-  if (value === PAYMENT_OPTIONS.DEPOSIT || value === "pay_deposit" || value === "half") return PAYMENT_OPTIONS.DEPOSIT;
+  if (value === PAYMENT_OPTIONS.DEPOSIT_50 || value === "deposit" || value === "pay_deposit" || value === "half") return PAYMENT_OPTIONS.DEPOSIT_50;
+  if (value === PAYMENT_OPTIONS.DEPOSIT_25 || value === "quarter" || value === "pay_quarter") return PAYMENT_OPTIONS.DEPOSIT_25;
   throw new Error("Invalid payment option.");
+}
+
+function calculateDepositAmountOre(totalAmountOre, numerator, denominator) {
+  // Round down in ore for the amount due now, then assign every remaining ore
+  // to the final balance so paid + remaining always equals the package total.
+  return Math.floor((totalAmountOre * numerator) / denominator);
 }
 
 export function calculatePaymentAmounts(packageId, paymentOption) {
@@ -166,7 +174,9 @@ export function calculatePaymentAmounts(packageId, paymentOption) {
   const totalAmountOre = item.totalAmountOre;
   const amountDueNowOre = option === PAYMENT_OPTIONS.FULL
     ? totalAmountOre
-    : Math.floor(totalAmountOre / 2);
+    : option === PAYMENT_OPTIONS.DEPOSIT_25
+      ? calculateDepositAmountOre(totalAmountOre, 1, 4)
+      : calculateDepositAmountOre(totalAmountOre, 1, 2);
   const remainingBalanceOre = totalAmountOre - amountDueNowOre;
 
   return {

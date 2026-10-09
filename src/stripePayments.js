@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Stripe from "stripe";
 import { createOrderFromVerifiedPayment, serializeOrder, validateWebsiteOrderDraft } from "./orders.js";
-import { calculatePaymentAmounts, formatSek, PAYMENT_OPTIONS } from "./pricing.js";
+import { calculatePaymentAmounts, formatSek, normalizePaymentOption, PAYMENT_OPTIONS } from "./pricing.js";
 import { sendInitialOrderNotifications } from "./orderNotifications.js";
 import { verifyEmailToken } from "./emailVerification.js";
 
@@ -12,23 +12,23 @@ export const STRIPE_PRODUCT_IDS = {
 export const STRIPE_PRICE_IDS = {
   "one-page-website": {
     full: "price_1UOBpgIO0JggS4KFPhchQ8wi",
-    deposit: "price_1UOBqLIO0JggS4KFWH9TbCFO",
+    deposit_50: "price_1UOBqLIO0JggS4KFWH9TbCFO",
   },
   "small-website": {
     full: "price_1UOBpqIO0JggS4KFwRdMBOPa",
-    deposit: "price_1UOBqSIO0JggS4KFROp3PvDj",
+    deposit_50: "price_1UOBqSIO0JggS4KFROp3PvDj",
   },
   "business-website": {
     full: "price_1UOBpwIO0JggS4KFmwOGdoI8",
-    deposit: "price_1UOBqYIO0JggS4KFdhsiWNGM",
+    deposit_50: "price_1UOBqYIO0JggS4KFdhsiWNGM",
   },
   "business-plus": {
     full: "price_1UOBq3IO0JggS4KFnyz9YNyV",
-    deposit: "price_1UOBqeIO0JggS4KFWPqatEaO",
+    deposit_50: "price_1UOBqeIO0JggS4KFWPqatEaO",
   },
   "online-store": {
     full: "price_1UOBq9IO0JggS4KF8edENRhP",
-    deposit: "price_1UOBqlIO0JggS4KFxaTaFXDp",
+    deposit_50: "price_1UOBqlIO0JggS4KFxaTaFXDp",
   },
   "bluemind-test-package": {
     full: "price_1UOEk9IO0JggS4KF8za1GpDy",
@@ -54,10 +54,34 @@ export function getStripe(env) {
 
 export function getStripePriceId(packageId, paymentOption) {
   const entry = STRIPE_PRICE_IDS[packageId];
-  const option = paymentOption === PAYMENT_OPTIONS.DEPOSIT ? PAYMENT_OPTIONS.DEPOSIT : PAYMENT_OPTIONS.FULL;
+  const option = normalizePaymentOption(paymentOption);
+  if (option === PAYMENT_OPTIONS.DEPOSIT_25) {
+    throw Object.assign(new Error("25% deposits use a server-calculated Stripe Checkout amount."), { statusCode: 400 });
+  }
   const priceId = entry?.[option];
   if (!priceId) throw Object.assign(new Error("Package is not configured for Stripe Checkout."), { statusCode: 400 });
   return priceId;
+}
+
+export function buildStripeLineItem(draft) {
+  if (draft.paymentOption !== PAYMENT_OPTIONS.DEPOSIT_25) {
+    return { price: draft.stripePriceId, quantity: 1 };
+  }
+
+  return {
+    quantity: 1,
+    price_data: {
+      currency: draft.amounts.currency.toLowerCase(),
+      unit_amount: draft.amounts.amountDueNowOre,
+      product_data: {
+        name: `${draft.amounts.packageName} - 25% Deposit`,
+        metadata: {
+          packageId: draft.packageId,
+          paymentOption: draft.paymentOption,
+        },
+      },
+    },
+  };
 }
 
 export function buildCheckoutDraft(body) {
@@ -74,7 +98,9 @@ export function buildCheckoutDraft(body) {
     customerLanguage: body?.customerLanguage || body?.language,
   });
   const amounts = calculatePaymentAmounts(draft.packageId, draft.paymentOption);
-  const priceId = getStripePriceId(draft.packageId, draft.paymentOption);
+  const priceId = draft.paymentOption === PAYMENT_OPTIONS.DEPOSIT_25
+    ? null
+    : getStripePriceId(draft.packageId, draft.paymentOption);
   return { ...draft, amounts, stripePriceId: priceId };
 }
 
@@ -117,7 +143,7 @@ export async function createStripeCheckoutSession({ env, db, body }) {
     requestedFeatures: draft.requestedFeatures,
     websiteDetails: draft.websiteDetails,
     customerLanguage: draft.customerLanguage,
-    stripePriceId: draft.stripePriceId,
+    stripePriceId: draft.stripePriceId || null,
     createdAt: now,
     updatedAt: now,
   };
@@ -127,7 +153,7 @@ export async function createStripeCheckoutSession({ env, db, body }) {
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
     customer_email: draft.verifiedEmail,
-    line_items: [{ price: draft.stripePriceId, quantity: 1 }],
+    line_items: [buildStripeLineItem(draft)],
     success_url: `${frontendBase}/quote?checkout_session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${frontendBase}/quote?checkout_cancelled=1`,
     client_reference_id: pendingCheckoutId,

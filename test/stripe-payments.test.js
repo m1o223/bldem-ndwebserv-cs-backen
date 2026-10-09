@@ -4,24 +4,27 @@ import Stripe from "stripe";
 import {
   STRIPE_PRICE_IDS,
   STRIPE_PRODUCT_IDS,
+  buildStripeLineItem,
   buildCheckoutDraft,
   constructStripeEvent,
   getStripePriceId,
 } from "../src/stripePayments.js";
 
 const expected = [
-  ["one-page-website", 449000, 224500],
-  ["small-website", 599000, 299500],
-  ["business-website", 749000, 374500],
-  ["business-plus", 999000, 499500],
-  ["online-store", 1299000, 649500],
+  ["one-page-website", 449000, 224500, 112250],
+  ["small-website", 599000, 299500, 149750],
+  ["business-website", 749000, 374500, 187250],
+  ["business-plus", 999000, 499500, 249750],
+  ["online-store", 1299000, 649500, 324750],
 ];
 
-test("Stripe price mapping contains full and deposit prices for every fixed website package", () => {
+test("Stripe price mapping contains full and 50% deposit prices for every fixed website package", () => {
   for (const [packageId] of expected) {
     assert.match(getStripePriceId(packageId, "full"), /^price_/);
     assert.match(getStripePriceId(packageId, "deposit"), /^price_/);
-    assert.notEqual(STRIPE_PRICE_IDS[packageId].full, STRIPE_PRICE_IDS[packageId].deposit);
+    assert.match(getStripePriceId(packageId, "deposit_50"), /^price_/);
+    assert.notEqual(STRIPE_PRICE_IDS[packageId].full, STRIPE_PRICE_IDS[packageId].deposit_50);
+    assert.throws(() => getStripePriceId(packageId, "deposit_25"), /server-calculated Stripe Checkout amount/);
   }
 });
 
@@ -29,6 +32,7 @@ test("Stripe mapping contains the BlueMind test package product and one-time pri
   assert.match(STRIPE_PRODUCT_IDS["bluemind-test-package"], /^prod_/);
   assert.match(getStripePriceId("bluemind-test-package", "full"), /^price_/);
   assert.throws(() => getStripePriceId("bluemind-test-package", "deposit"), /Package is not configured for Stripe Checkout/);
+  assert.throws(() => getStripePriceId("bluemind-test-package", "deposit_25"), /server-calculated Stripe Checkout amount/);
 
   const draft = buildCheckoutDraft({
     packageId: "bluemind-test-package",
@@ -43,7 +47,7 @@ test("Stripe mapping contains the BlueMind test package product and one-time pri
 });
 
 test("checkout draft validates package, payment option, email, project description, and amounts", () => {
-  for (const [packageId, totalAmountOre, depositOre] of expected) {
+  for (const [packageId, totalAmountOre, depositOre, quarterDepositOre] of expected) {
     const full = buildCheckoutDraft({
       packageId,
       paymentOption: "full",
@@ -64,6 +68,22 @@ test("checkout draft validates package, payment option, email, project descripti
     });
     assert.equal(deposit.amounts.amountDueNowOre, depositOre);
     assert.equal(deposit.amounts.remainingBalanceOre, totalAmountOre - depositOre);
+    assert.equal(deposit.amounts.paymentOption, "deposit_50");
+
+    const quarter = buildCheckoutDraft({
+      packageId,
+      paymentOption: "deposit_25",
+      customerName: "Test Customer",
+      verifiedEmail: "customer@example.com",
+      projectDescription: "Build a website.",
+    });
+    assert.equal(quarter.amounts.amountDueNowOre, quarterDepositOre);
+    assert.equal(quarter.amounts.remainingBalanceOre, totalAmountOre - quarterDepositOre);
+    assert.equal(quarter.stripePriceId, null);
+    const lineItem = buildStripeLineItem(quarter);
+    assert.equal(lineItem.price_data.unit_amount, quarterDepositOre);
+    assert.equal(lineItem.price_data.currency, "sek");
+    assert.equal(lineItem.price_data.product_data.metadata.paymentOption, "deposit_25");
   }
 
   assert.throws(() => buildCheckoutDraft({

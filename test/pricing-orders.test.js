@@ -20,24 +20,27 @@ import {
 import { ValidationError } from "../src/validation.js";
 
 const expectedPrices = [
-  ["one-page-website", "One Page Website", 449000, 224500],
-  ["small-website", "Small Website", 599000, 299500],
-  ["business-website", "Business Website", 749000, 374500],
-  ["business-plus", "Business Plus", 999000, 499500],
-  ["online-store", "Online Store", 1299000, 649500],
+  ["one-page-website", "One Page Website", 449000, 224500, 112250],
+  ["small-website", "Small Website", 599000, 299500, 149750],
+  ["business-website", "Business Website", 749000, 374500, 187250],
+  ["business-plus", "Business Plus", 999000, 499500, 249750],
+  ["online-store", "Online Store", 1299000, 649500, 324750],
 ];
 
 test("website pricing catalog matches the agreed package prices", () => {
   const active = listActiveWebsitePackages();
   assert.equal(active.length, 5);
 
-  for (const [packageId, name, totalAmountOre, depositOre] of expectedPrices) {
+  for (const [packageId, name, totalAmountOre, depositOre, quarterDepositOre] of expectedPrices) {
     const item = getWebsitePackage(packageId);
     assert.equal(item.name, name);
     assert.equal(item.totalAmountOre, totalAmountOre);
     assert.equal(item.currency, "SEK");
-    assert.equal(calculatePaymentAmounts(packageId, "deposit").amountDueNowOre, depositOre);
-    assert.equal(calculatePaymentAmounts(packageId, "deposit").remainingBalanceOre, totalAmountOre - depositOre);
+    assert.equal(calculatePaymentAmounts(packageId, "deposit").paymentOption, "deposit_50");
+    assert.equal(calculatePaymentAmounts(packageId, "deposit_50").amountDueNowOre, depositOre);
+    assert.equal(calculatePaymentAmounts(packageId, "deposit_50").remainingBalanceOre, totalAmountOre - depositOre);
+    assert.equal(calculatePaymentAmounts(packageId, "deposit_25").amountDueNowOre, quarterDepositOre);
+    assert.equal(calculatePaymentAmounts(packageId, "deposit_25").remainingBalanceOre, totalAmountOre - quarterDepositOre);
     assert.equal(calculatePaymentAmounts(packageId, "full").amountDueNowOre, totalAmountOre);
     assert.equal(calculatePaymentAmounts(packageId, "full").remainingBalanceOre, 0);
   }
@@ -51,6 +54,7 @@ test("test package is available only through the full-payment sandbox path", () 
   assert.equal(calculatePaymentAmounts("bluemind-test-package", "full").amountDueNowOre, 1000);
   assert.equal(calculatePaymentAmounts("bluemind-test-package", "full").remainingBalanceOre, 0);
   assert.throws(() => calculatePaymentAmounts("bluemind-test-package", "deposit"), /Test package only supports full payment/);
+  assert.throws(() => calculatePaymentAmounts("bluemind-test-package", "deposit_25"), /Test package only supports full payment/);
 });
 
 test("custom quote package and invalid package ids cannot produce payment amounts", () => {
@@ -62,7 +66,7 @@ test("custom quote package and invalid package ids cannot produce payment amount
 test("verified payment builds a paid order with a price snapshot and project details", () => {
   const order = buildOrderDocumentFromVerifiedPayment({
     packageId: "business-website",
-    paymentOption: "deposit",
+    paymentOption: "deposit_25",
     customerName: "Demo Customer",
     verifiedEmail: "CUSTOMER@example.com",
     companyName: "Demo Company",
@@ -81,8 +85,9 @@ test("verified payment builds a paid order with a price snapshot and project det
   assert.equal(order.orderNumber, "#516");
   assert.equal(order.packageId, "business-website");
   assert.equal(order.totalAmountOre, 749000);
-  assert.equal(order.amountPaidOre, 374500);
-  assert.equal(order.remainingBalanceOre, 374500);
+  assert.equal(order.amountPaidOre, 187250);
+  assert.equal(order.remainingBalanceOre, 561750);
+  assert.equal(order.paymentOption, "deposit_25");
   assert.equal(order.paymentStatus, "Deposit Paid");
   assert.equal(order.projectStatus, "Pending Review");
   assert.equal(order.reviewStatus, "pending_review");

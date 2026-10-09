@@ -182,7 +182,9 @@ async function sendEmail(env, options, { customerFacing = false } = {}) {
 }
 
 function paymentTypeLabel(order) {
-  return order.paymentOption === "deposit" ? "50% Deposit" : "Full";
+  if (order.paymentOption === "deposit_25") return "25% Deposit";
+  if (order.paymentOption === "deposit_50" || order.paymentOption === "deposit") return "50% Deposit";
+  return "Full";
 }
 
 function isSandboxTestOrder(order) {
@@ -222,6 +224,7 @@ export function buildCustomerPaymentEmail(order) {
       "",
       line("Package", order.packageName || order.package),
       line("Total Price", formatSekFromOre(order.totalAmountOre)),
+      line("Payment Option", paymentTypeLabel(order)),
       line("Paid", formatSekFromOre(order.amountPaidOre)),
       line("Remaining", formatSekFromOre(order.remainingBalanceOre)),
       "",
