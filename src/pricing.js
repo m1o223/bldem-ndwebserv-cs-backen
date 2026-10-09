@@ -210,5 +210,9 @@ export function createPriceSnapshot(packageId, paymentOption) {
 
 export function formatSek(amountOre) {
   if (!Number.isInteger(amountOre)) return "";
-  return `${new Intl.NumberFormat("sv-SE").format(amountOre / 100)} SEK`;
+  const hasOre = amountOre % 100 !== 0;
+  return `${new Intl.NumberFormat("sv-SE", {
+    minimumFractionDigits: hasOre ? 2 : 0,
+    maximumFractionDigits: hasOre ? 2 : 0,
+  }).format(amountOre / 100)} SEK`;
 }

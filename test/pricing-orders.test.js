@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   calculatePaymentAmounts,
+  formatSek,
   getWebsitePackage,
   listActiveWebsitePackages,
 } from "../src/pricing.js";
@@ -55,6 +56,11 @@ test("test package is available only through the full-payment sandbox path", () 
   assert.equal(calculatePaymentAmounts("bluemind-test-package", "full").remainingBalanceOre, 0);
   assert.throws(() => calculatePaymentAmounts("bluemind-test-package", "deposit"), /Test package only supports full payment/);
   assert.throws(() => calculatePaymentAmounts("bluemind-test-package", "deposit_25"), /Test package only supports full payment/);
+});
+
+test("SEK formatting preserves öre for fractional deposit amounts", () => {
+  assert.equal(formatSek(449000).replace(/\s/g, " "), "4 490 SEK");
+  assert.equal(formatSek(112250).replace(/\s/g, " "), "1 122,50 SEK");
 });
 
 test("custom quote package and invalid package ids cannot produce payment amounts", () => {
