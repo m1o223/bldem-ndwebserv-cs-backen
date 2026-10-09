@@ -194,16 +194,17 @@ function isSandboxTestOrder(order) {
 export function buildCustomerPaymentEmail(order) {
   if (isSandboxTestOrder(order)) {
     return {
-      subject: "BlueMind - Test Payment Confirmed",
+      subject: "BlueMind - Sandbox Test Payment Confirmed",
       text: [
         `Hello ${order.customerName || "there"},`,
         "",
-        "Your BlueMind Sandbox test payment was confirmed.",
+        "Your BlueMind Stripe Sandbox test payment was confirmed.",
+        "This is not a real paid customer order and no live card was charged.",
         "",
         line("Order Number", order.orderNumber),
         line("Package", order.packageName || order.package || "BlueMind Test Package"),
         line("Amount paid", formatSekFromOre(order.amountPaidOre)),
-        "Payment Status: Paid",
+        line("Payment Status", order.paymentStatus || "Test Paid"),
         "Test Mode: Sandbox Test Only - No real payment was charged.",
         "",
         "BlueMind Web Service",
@@ -241,7 +242,7 @@ export function buildBusinessPaymentEmail(order, env = {}) {
   const adminUrl = getAdminDashboardUrl(env, order.orderNumber);
   if (isSandboxTestOrder(order)) {
     return {
-      subject: "BlueMind - New Test Order Received",
+      subject: "BlueMind - New Sandbox Test Order Received",
       text: [
         "NEW SANDBOX TEST ORDER RECEIVED",
         "",
@@ -250,7 +251,7 @@ export function buildBusinessPaymentEmail(order, env = {}) {
         line("Customer Email", order.email),
         line("Package", order.packageName || order.package || "BlueMind Test Package"),
         line("Payment Amount", formatSekFromOre(order.amountPaidOre)),
-        "Payment Status: Paid",
+        line("Payment Status", order.paymentStatus || "Test Paid"),
         "Project Status: Pending Review",
         "Test Mode: Sandbox Test Only - do not count as real customer revenue.",
         "",

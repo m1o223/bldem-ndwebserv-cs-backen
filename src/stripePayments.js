@@ -265,7 +265,15 @@ export async function createStripeCheckoutSession({ env, db, body }) {
 
   await db.collection("checkoutSessions").updateOne(
     { _id: pendingCheckoutId },
-    { $set: { stripeSessionId: session.id, stripeUrl: session.url, updatedAt: new Date() } },
+    {
+      $set: {
+        stripeSessionId: session.id,
+        stripeUrl: session.url,
+        stripeLivemode: session.livemode === true,
+        paymentMode: session.livemode === true ? "live" : "test",
+        updatedAt: new Date(),
+      },
+    },
   );
 
   return {
@@ -339,15 +347,18 @@ async function createOrderForPaidSession({ env, db, event, session }) {
     paymentMethodDisplayName: pending.paymentMethodDisplayName,
     paymentEventId: session.id,
     paymentReference: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id,
+    stripeLivemode: session.livemode === true,
   });
 
   if (result.order) {
     await markPendingCheckout(db, session.id, {
-      status: "confirmed",
+      status: session.livemode === true ? "confirmed" : "test_confirmed",
       stripeEventId: event.id,
       orderNumber: result.order.orderNumber,
       orderId: result.order._id,
       paymentIntentId: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id,
+      stripeLivemode: session.livemode === true,
+      paymentMode: session.livemode === true ? "live" : "test",
     });
 
     if (result.created) {
@@ -389,6 +400,8 @@ export async function getStripeCheckoutStatus({ db, sessionId }) {
   return {
     status: pending.status || "pending",
     sessionId: cleanSessionId,
+    paymentMode: pending.paymentMode || (pending.stripeLivemode === true ? "live" : pending.stripeLivemode === false ? "test" : undefined),
+    stripeLivemode: pending.stripeLivemode,
     order: order ? serializeOrder(order) : null,
     amounts: {
       total: formatSek(pending.totalAmountOre),

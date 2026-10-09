@@ -84,6 +84,7 @@ test("verified payment builds a paid order with a price snapshot and project det
       additionalNotes: "Use a minimal style.",
     },
     paymentProvider: "stripe",
+    stripeLivemode: true,
     selectedPaymentMethod: "visa",
     stripePaymentMethodType: "card",
     paymentMethodDisplayName: "Visa",
@@ -108,6 +109,9 @@ test("verified payment builds a paid order with a price snapshot and project det
   assert.deepEqual(order.requestedFeatures, ["Contact Form", "Gallery"]);
   assert.equal(order.events[0].type, "deposit_received");
   assert.equal(order.careEligibility.eligible, true);
+  assert.equal(order.isPaidOrder, true);
+  assert.equal(order.paymentMode, "live");
+  assert.equal(order.stripeLivemode, true);
 });
 
 test("verified Stripe Sandbox test payment builds a separated test order", () => {
@@ -119,6 +123,7 @@ test("verified Stripe Sandbox test payment builds a separated test order", () =>
     projectDescription: "Verify the complete BlueMind order pipeline.",
     requestedFeatures: ["Secure checkout test", "Email notifications"],
     paymentProvider: "stripe",
+    stripeLivemode: false,
     paymentEventId: "evt_test_package",
     paymentReference: "pi_test_package",
   }, { orderNumber: "#600", paidAt: new Date("2026-10-08T11:00:00.000Z") });
@@ -127,12 +132,38 @@ test("verified Stripe Sandbox test payment builds a separated test order", () =>
   assert.equal(order.totalAmountOre, 1000);
   assert.equal(order.amountPaidOre, 1000);
   assert.equal(order.remainingBalanceOre, 0);
-  assert.equal(order.paymentStatus, "Paid");
+  assert.equal(order.paymentStatus, "Test Paid");
   assert.equal(order.projectStatus, "Pending Review");
   assert.equal(order.isSandboxTestOrder, true);
+  assert.equal(order.isPaidOrder, false);
+  assert.equal(order.paymentMode, "test");
+  assert.equal(order.stripeLivemode, false);
   assert.equal(order.source, "stripe_sandbox_test");
   assert.equal(order.careEligibility.eligible, false);
   assert.match(order.internalNotes, /Sandbox test order/);
+});
+
+test("Stripe Sandbox payments for normal packages are not real paid orders", () => {
+  const order = buildOrderDocumentFromVerifiedPayment({
+    packageId: "business-website",
+    paymentOption: "deposit_50",
+    customerName: "Sandbox Customer",
+    verifiedEmail: "sandbox.customer@example.com",
+    projectDescription: "Verify that test-mode payments stay separated.",
+    paymentProvider: "stripe",
+    stripeLivemode: false,
+    paymentEventId: "cs_test_normal_package",
+    paymentReference: "pi_test_normal_package",
+  }, { orderNumber: "#601", paidAt: new Date("2026-10-08T12:00:00.000Z") });
+
+  assert.equal(order.packageId, "business-website");
+  assert.equal(order.paymentStatus, "Test Deposit Paid");
+  assert.equal(order.isPaidOrder, false);
+  assert.equal(order.isSandboxTestOrder, true);
+  assert.equal(order.paymentMode, "test");
+  assert.equal(order.source, "stripe_sandbox_test");
+  assert.equal(order.careEligibility.eligible, false);
+  assert.match(order.activity[0].message, /not a real paid customer order/);
 });
 
 test("verified payment order creation rejects missing critical fields", () => {

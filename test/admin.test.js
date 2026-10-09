@@ -107,6 +107,8 @@ test("paid order email copy separates payment confirmation from employee review 
     ...order,
     orderNumber: "#516",
     isPaidOrder: true,
+    paymentMode: "live",
+    stripeLivemode: true,
     projectStatus: "Pending Review",
     paymentOption: "deposit",
     totalAmountOre: 749000,
@@ -147,17 +149,18 @@ test("sandbox test order email copy is marked as test mode", () => {
     totalAmountOre: 1000,
     amountPaidOre: 1000,
     remainingBalanceOre: 0,
-    paymentStatus: "Paid",
+    paymentStatus: "Test Paid",
     projectStatus: "Pending Review",
   };
 
   const customer = buildCustomerPaymentEmail(testOrder);
-  assert.equal(customer.subject, "BlueMind - Test Payment Confirmed");
+  assert.equal(customer.subject, "BlueMind - Sandbox Test Payment Confirmed");
   assert.match(customer.text, /Sandbox Test Only/);
+  assert.match(customer.text, /not a real paid customer order/);
   assert.match(customer.text, /10 SEK/);
 
   const business = buildBusinessPaymentEmail(testOrder, { ADMIN_FRONTEND_URL: "https://admin.example.com" });
-  assert.equal(business.subject, "BlueMind - New Test Order Received");
+  assert.equal(business.subject, "BlueMind - New Sandbox Test Order Received");
   assert.match(business.text, /NEW SANDBOX TEST ORDER RECEIVED/);
   assert.match(business.text, /do not count as real customer revenue/);
 });

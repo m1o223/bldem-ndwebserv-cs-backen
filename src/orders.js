@@ -27,6 +27,8 @@ export const PAYMENT_STATUSES = [
   "Pending",
   "Paid",
   "Deposit Paid",
+  "Test Paid",
+  "Test Deposit Paid",
   "Partially Paid",
   "Final Balance Due",
   "Refunded",
@@ -287,10 +289,13 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
   if (!/^#\d+$/.test(normalizedOrderNumber)) throw new ValidationError({ orderNumber: "A valid generated order number is required." });
 
   const isFullPayment = amounts.remainingBalanceOre === 0;
-  const isSandboxTestOrder = draft.packageId === "bluemind-test-package";
   const paymentProvider = cleanString(input.paymentProvider, 80) || "pending-provider";
   const paymentEventId = cleanString(input.paymentEventId, 180);
   const paymentReference = cleanString(input.paymentReference, 180);
+  const stripeLivemode = input.stripeLivemode === true;
+  const isStripeProvider = paymentProvider.toLowerCase() === "stripe";
+  const isSandboxPayment = isStripeProvider && !stripeLivemode;
+  const isSandboxTestOrder = draft.packageId === "bluemind-test-package" || isSandboxPayment;
   const selectedPaymentMethod = cleanString(input.selectedPaymentMethod, 60);
   const stripePaymentMethodType = cleanString(input.stripePaymentMethodType, 60);
   const paymentMethodDisplayName = cleanString(input.paymentMethodDisplayName, 80);
@@ -302,7 +307,10 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
     ? deliveryDate
     : new Date(createdAt.getTime() + 14 * 24 * 60 * 60 * 1000);
 
-  const paymentStatus = isFullPayment ? "Paid" : "Deposit Paid";
+  const paymentStatus = isSandboxTestOrder
+    ? (isFullPayment ? "Test Paid" : "Test Deposit Paid")
+    : (isFullPayment ? "Paid" : "Deposit Paid");
+  const source = isSandboxTestOrder ? "stripe_sandbox_test" : "stripe_live_payment";
   const events = [
     createOrderEvent({
       type: isFullPayment ? "new_paid_order" : "deposit_received",
@@ -311,7 +319,7 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
       paymentEventId,
       amountOre: amounts.amountDueNowOre,
       currency: amounts.currency,
-      message: isSandboxTestOrder ? "Sandbox test payment received." : (isFullPayment ? "Full payment received." : "Deposit payment received."),
+      message: isSandboxTestOrder ? "Stripe Sandbox test payment confirmed. This is not real customer revenue." : (isFullPayment ? "Live full payment received." : "Live deposit payment received."),
       createdAt,
     }),
   ];
@@ -336,6 +344,8 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
     currency: amounts.currency,
     paymentOption: amounts.paymentOption,
     paymentProvider,
+    paymentMode: isSandboxTestOrder ? "test" : "live",
+    stripeLivemode: isStripeProvider ? stripeLivemode : undefined,
     selectedPaymentMethod: selectedPaymentMethod || undefined,
     stripePaymentMethodType: stripePaymentMethodType || undefined,
     paymentMethodDisplayName: paymentMethodDisplayName || undefined,
@@ -354,17 +364,17 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
     orderDate: createdAt,
     deliveryDate: finalDeliveryDate,
     isDemo: false,
-    isPaidOrder: true,
+    isPaidOrder: !isSandboxTestOrder,
     isSandboxTestOrder,
     testMode: isSandboxTestOrder ? "stripe_sandbox" : undefined,
-    source: isSandboxTestOrder ? "stripe_sandbox_test" : "payment_provider",
-    internalNotes: isSandboxTestOrder ? "Sandbox test order. Do not count as real customer revenue." : "",
+    source,
+    internalNotes: isSandboxTestOrder ? "Stripe Sandbox test order. Do not count as real customer revenue or a live paid order." : "",
     activity: [
       createOrderActivity({
         action: "order_created",
         message: isSandboxTestOrder
-          ? `System created ${normalizedOrderNumber} after verified Stripe Sandbox test payment. Project is pending employee review.`
-          : `System created ${normalizedOrderNumber} after verified ${paymentProvider} payment. Project is pending employee review.`,
+          ? `System created ${normalizedOrderNumber} after verified Stripe Sandbox test payment. This is not a real paid customer order.`
+          : `System created ${normalizedOrderNumber} after verified live ${paymentProvider} payment. Project is pending employee review.`,
         createdAt,
       }),
     ],
@@ -479,6 +489,8 @@ export function serializeOrder(order) {
     currency: order.currency,
     paymentOption: order.paymentOption,
     paymentProvider: order.paymentProvider,
+    paymentMode: order.paymentMode,
+    stripeLivemode: order.stripeLivemode,
     paymentReference: order.paymentReference,
     paymentStatus: order.paymentStatus,
     projectStatus: order.projectStatus,
