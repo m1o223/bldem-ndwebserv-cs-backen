@@ -56,6 +56,33 @@ function flagEnabled(value) {
   return /^(1|true|yes|on)$/i.test(cleanString(value, 20));
 }
 
+export function getStripeRuntimeConfig(env) {
+  const requestedMode = cleanString(env.STRIPE_ENVIRONMENT || env.STRIPE_MODE, 20).toLowerCase();
+  const liveRequested = requestedMode === "live";
+  const liveEnabled = flagEnabled(env.ENABLE_STRIPE_LIVE_PAYMENTS);
+  const liveKey = cleanString(env.STRIPE_LIVE_SECRET_KEY, 300);
+  const testKey = cleanString(env.STRIPE_TEST_SECRET_KEY || env.STRIPE_SECRET_KEY, 300);
+  const fallbackKey = cleanString(env.STRIPE_SECRET_KEY, 300);
+
+  if (liveRequested) {
+    if (!liveEnabled) {
+      throw Object.assign(new Error("Stripe live payments are prepared but disabled. Set ENABLE_STRIPE_LIVE_PAYMENTS=true only after explicit launch approval."), { statusCode: 503 });
+    }
+    const key = liveKey || fallbackKey;
+    if (!key) throw Object.assign(new Error("Stripe live secret key is not configured."), { statusCode: 503 });
+    if (!key.startsWith("sk_live_") && !key.startsWith("rk_live_")) {
+      throw Object.assign(new Error("Stripe live mode requires a live secret or restricted key."), { statusCode: 503 });
+    }
+    return { key, mode: "live", livemode: true };
+  }
+
+  if (!testKey) throw Object.assign(new Error("Stripe is not configured."), { statusCode: 503 });
+  if (testKey.startsWith("sk_live_") || testKey.startsWith("rk_live_")) {
+    throw Object.assign(new Error("Live Stripe keys are not allowed unless STRIPE_ENVIRONMENT=live and ENABLE_STRIPE_LIVE_PAYMENTS=true."), { statusCode: 503 });
+  }
+  return { key: testKey, mode: "test", livemode: false };
+}
+
 export function resolveCheckoutPaymentMethod(value, env = {}) {
   const selected = cleanString(value || CHECKOUT_PAYMENT_METHODS.CARD, 40).toLowerCase();
   if ([CHECKOUT_PAYMENT_METHODS.CARD, CHECKOUT_PAYMENT_METHODS.VISA, CHECKOUT_PAYMENT_METHODS.MASTERCARD].includes(selected)) {
@@ -95,13 +122,12 @@ export function resolveCheckoutPaymentMethod(value, env = {}) {
 }
 
 export function getStripe(env) {
-  const key = cleanString(env.STRIPE_SECRET_KEY, 300);
-  if (!key) throw Object.assign(new Error("Stripe is not configured."), { statusCode: 503 });
-  if (key.startsWith("sk_live_") || key.startsWith("rk_live_")) throw Object.assign(new Error("Live Stripe keys are not allowed for this test-mode integration."), { statusCode: 503 });
-  if (!stripeClients.has(key)) {
-    stripeClients.set(key, new Stripe(key, { apiVersion: "2025-09-30.clover" }));
+  const config = getStripeRuntimeConfig(env);
+  const cacheKey = `${config.mode}:${config.key}`;
+  if (!stripeClients.has(cacheKey)) {
+    stripeClients.set(cacheKey, new Stripe(config.key, { apiVersion: "2025-09-30.clover" }));
   }
-  return stripeClients.get(key);
+  return stripeClients.get(cacheKey);
 }
 
 export function getStripePriceId(packageId, paymentOption) {
@@ -220,6 +246,7 @@ export async function createStripeCheckoutSession({ env, db, body }) {
     checkoutAttemptId: body?.checkoutAttemptId,
     token: body?.emailVerificationToken,
   });
+  const stripeConfig = getStripeRuntimeConfig(env);
   const stripe = getStripe(env);
   const pendingCheckoutId = randomUUID();
   const frontendBase = getFrontendBaseUrl(env);
@@ -263,6 +290,10 @@ export async function createStripeCheckoutSession({ env, db, body }) {
     selectedPaymentMethod,
   }));
 
+  if (session.livemode !== stripeConfig.livemode) {
+    throw Object.assign(new Error("Stripe Checkout mode mismatch. Payment session was not started."), { statusCode: 503 });
+  }
+
   await db.collection("checkoutSessions").updateOne(
     { _id: pendingCheckoutId },
     {
@@ -291,8 +322,13 @@ export async function createStripeCheckoutSession({ env, db, body }) {
 }
 
 export function constructStripeEvent(env, rawBody, signature) {
-  const secret = cleanString(env.STRIPE_WEBHOOK_SECRET, 300);
-  if (!secret) throw Object.assign(new Error("Stripe webhook is not configured."), { statusCode: 503 });
+  const stripeConfig = getStripeRuntimeConfig(env);
+  const secret = stripeConfig.livemode
+    ? cleanString(env.STRIPE_LIVE_WEBHOOK_SECRET, 300)
+    : cleanString(env.STRIPE_TEST_WEBHOOK_SECRET || env.STRIPE_WEBHOOK_SECRET, 300);
+  if (!secret) {
+    throw Object.assign(new Error(stripeConfig.livemode ? "Stripe live webhook secret is not configured." : "Stripe webhook is not configured."), { statusCode: 503 });
+  }
   return getStripe(env).webhooks.constructEvent(rawBody, signature, secret);
 }
 

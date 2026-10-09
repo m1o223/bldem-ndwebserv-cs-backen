@@ -10,6 +10,7 @@ import {
   constructStripeEvent,
   createStripeHostedCheckout,
   getStripe,
+  getStripeRuntimeConfig,
   getStripePriceId,
   resolveCheckoutPaymentMethod,
 } from "../src/stripePayments.js";
@@ -185,9 +186,47 @@ test("Stripe webhook signatures are verified against the raw body", () => {
     STRIPE_SECRET_KEY: "sk_test_fake",
     STRIPE_WEBHOOK_SECRET: "whsec_wrong",
   }, Buffer.from(payload), header));
+
+  const liveSecret = "whsec_live_secret";
+  const liveHeader = Stripe.webhooks.generateTestHeaderString({ payload, secret: liveSecret });
+  const liveEvent = constructStripeEvent({
+    STRIPE_ENVIRONMENT: "live",
+    ENABLE_STRIPE_LIVE_PAYMENTS: "true",
+    STRIPE_LIVE_SECRET_KEY: "rk_live_fake",
+    STRIPE_LIVE_WEBHOOK_SECRET: liveSecret,
+  }, Buffer.from(payload), liveHeader);
+  assert.equal(liveEvent.id, "evt_test");
+  assert.throws(() => constructStripeEvent({
+    STRIPE_ENVIRONMENT: "live",
+    ENABLE_STRIPE_LIVE_PAYMENTS: "true",
+    STRIPE_LIVE_SECRET_KEY: "rk_live_fake",
+    STRIPE_WEBHOOK_SECRET: secret,
+  }, Buffer.from(payload), liveHeader), /live webhook secret/);
 });
 
-test("live Stripe keys are blocked until live payments are explicitly approved", () => {
-  assert.throws(() => getStripe({ STRIPE_SECRET_KEY: "sk_live_fake" }), /Live Stripe keys are not allowed/);
-  assert.throws(() => getStripe({ STRIPE_SECRET_KEY: "rk_live_fake" }), /Live Stripe keys are not allowed/);
+test("Stripe runtime config separates test and live activation", () => {
+  assert.deepEqual(getStripeRuntimeConfig({ STRIPE_SECRET_KEY: "sk_test_fake" }), {
+    key: "sk_test_fake",
+    mode: "test",
+    livemode: false,
+  });
+  assert.throws(() => getStripeRuntimeConfig({ STRIPE_SECRET_KEY: "rk_live_fake" }), /Live Stripe keys are not allowed/);
+  assert.throws(() => getStripeRuntimeConfig({
+    STRIPE_ENVIRONMENT: "live",
+    STRIPE_LIVE_SECRET_KEY: "rk_live_fake",
+  }), /disabled/);
+  assert.deepEqual(getStripeRuntimeConfig({
+    STRIPE_ENVIRONMENT: "live",
+    ENABLE_STRIPE_LIVE_PAYMENTS: "true",
+    STRIPE_LIVE_SECRET_KEY: "rk_live_fake",
+  }), {
+    key: "rk_live_fake",
+    mode: "live",
+    livemode: true,
+  });
+  assert.throws(() => getStripe({
+    STRIPE_ENVIRONMENT: "live",
+    ENABLE_STRIPE_LIVE_PAYMENTS: "true",
+    STRIPE_LIVE_SECRET_KEY: "sk_test_fake",
+  }), /requires a live/);
 });
