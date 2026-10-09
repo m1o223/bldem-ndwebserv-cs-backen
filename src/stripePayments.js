@@ -97,7 +97,7 @@ export function resolveCheckoutPaymentMethod(value, env = {}) {
 export function getStripe(env) {
   const key = cleanString(env.STRIPE_SECRET_KEY, 300);
   if (!key) throw Object.assign(new Error("Stripe is not configured."), { statusCode: 503 });
-  if (key.startsWith("sk_live_")) throw Object.assign(new Error("Live Stripe keys are not allowed for this test-mode integration."), { statusCode: 503 });
+  if (key.startsWith("sk_live_") || key.startsWith("rk_live_")) throw Object.assign(new Error("Live Stripe keys are not allowed for this test-mode integration."), { statusCode: 503 });
   if (!stripeClients.has(key)) {
     stripeClients.set(key, new Stripe(key, { apiVersion: "2025-09-30.clover" }));
   }

@@ -9,6 +9,7 @@ import {
   buildCheckoutSessionParams,
   constructStripeEvent,
   createStripeHostedCheckout,
+  getStripe,
   getStripePriceId,
   resolveCheckoutPaymentMethod,
 } from "../src/stripePayments.js";
@@ -184,4 +185,9 @@ test("Stripe webhook signatures are verified against the raw body", () => {
     STRIPE_SECRET_KEY: "sk_test_fake",
     STRIPE_WEBHOOK_SECRET: "whsec_wrong",
   }, Buffer.from(payload), header));
+});
+
+test("live Stripe keys are blocked until live payments are explicitly approved", () => {
+  assert.throws(() => getStripe({ STRIPE_SECRET_KEY: "sk_live_fake" }), /Live Stripe keys are not allowed/);
+  assert.throws(() => getStripe({ STRIPE_SECRET_KEY: "rk_live_fake" }), /Live Stripe keys are not allowed/);
 });
