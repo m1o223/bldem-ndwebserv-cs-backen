@@ -188,6 +188,24 @@ export function buildCheckoutSessionParams({ draft, frontendBase, pendingCheckou
   };
 }
 
+function usesDeprecatedPaymentMethodTypes(error) {
+  const message = `${error?.message || ""} ${error?.raw?.message || ""}`.toLowerCase();
+  return message.includes("payment_method_types") && (message.includes("unknown parameter") || message.includes("not allowed") || message.includes("deprecated"));
+}
+
+export async function createStripeHostedCheckout(stripe, params) {
+  try {
+    return await stripe.checkout.sessions.create(params);
+  } catch (error) {
+    if (!usesDeprecatedPaymentMethodTypes(error)) throw error;
+    const { payment_method_types: paymentMethodTypes, ...rest } = params;
+    return await stripe.checkout.sessions.create({
+      ...rest,
+      allowed_payment_method_types: paymentMethodTypes,
+    });
+  }
+}
+
 function getFrontendBaseUrl(env) {
   const configured = cleanString(env.FRONTEND_URL || env.PUBLIC_FRONTEND_URL, 300).replace(/\/$/, "");
   if (configured) return configured;
@@ -238,7 +256,7 @@ export async function createStripeCheckoutSession({ env, db, body }) {
 
   await db.collection("checkoutSessions").insertOne(checkoutDoc);
 
-  const session = await stripe.checkout.sessions.create(buildCheckoutSessionParams({
+  const session = await createStripeHostedCheckout(stripe, buildCheckoutSessionParams({
     draft,
     frontendBase,
     pendingCheckoutId,

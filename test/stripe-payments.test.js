@@ -8,6 +8,7 @@ import {
   buildCheckoutDraft,
   buildCheckoutSessionParams,
   constructStripeEvent,
+  createStripeHostedCheckout,
   getStripePriceId,
   resolveCheckoutPaymentMethod,
 } from "../src/stripePayments.js";
@@ -136,6 +137,32 @@ test("checkout session params carry the selected method and exact server amount"
   assert.equal(params.metadata.selectedPaymentMethod, "visa");
   assert.equal(params.metadata.stripePaymentMethodType, "card");
   assert.equal(params.payment_intent_data.metadata.selectedPaymentMethod, "visa");
+});
+
+test("Stripe hosted checkout retries with allowed payment method types when required", async () => {
+  const calls = [];
+  const stripe = {
+    checkout: {
+      sessions: {
+        create: async (params) => {
+          calls.push(params);
+          if (calls.length === 1) throw new Error("Received unknown parameter: payment_method_types");
+          return { id: "cs_test_retry" };
+        },
+      },
+    },
+  };
+
+  const session = await createStripeHostedCheckout(stripe, {
+    mode: "payment",
+    payment_method_types: ["card"],
+    line_items: [],
+  });
+
+  assert.equal(session.id, "cs_test_retry");
+  assert.deepEqual(calls[0].payment_method_types, ["card"]);
+  assert.equal(calls[1].payment_method_types, undefined);
+  assert.deepEqual(calls[1].allowed_payment_method_types, ["card"]);
 });
 
 test("Stripe webhook signatures are verified against the raw body", () => {
