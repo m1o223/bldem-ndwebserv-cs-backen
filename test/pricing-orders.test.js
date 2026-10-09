@@ -84,6 +84,9 @@ test("verified payment builds a paid order with a price snapshot and project det
       additionalNotes: "Use a minimal style.",
     },
     paymentProvider: "stripe",
+    selectedPaymentMethod: "visa",
+    stripePaymentMethodType: "card",
+    paymentMethodDisplayName: "Visa",
     paymentEventId: "evt_test_deposit",
     paymentReference: "pi_test",
   }, { orderNumber: "#516", paidAt: new Date("2026-10-08T10:00:00.000Z") });
@@ -94,6 +97,9 @@ test("verified payment builds a paid order with a price snapshot and project det
   assert.equal(order.amountPaidOre, 187250);
   assert.equal(order.remainingBalanceOre, 561750);
   assert.equal(order.paymentOption, "deposit_25");
+  assert.equal(order.selectedPaymentMethod, "visa");
+  assert.equal(order.stripePaymentMethodType, "card");
+  assert.equal(order.paymentMethodDisplayName, "Visa");
   assert.equal(order.paymentStatus, "Deposit Paid");
   assert.equal(order.projectStatus, "Pending Review");
   assert.equal(order.reviewStatus, "pending_review");

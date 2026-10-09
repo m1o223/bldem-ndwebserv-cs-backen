@@ -42,6 +42,58 @@ function cleanString(value, maxLength = 1000) {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
+export const CHECKOUT_PAYMENT_METHODS = {
+  CARD: "card",
+  VISA: "visa",
+  MASTERCARD: "mastercard",
+  APPLE_PAY: "apple-pay",
+  GOOGLE_PAY: "google-pay",
+  PAYPAL: "paypal",
+  KLARNA: "klarna",
+};
+
+function flagEnabled(value) {
+  return /^(1|true|yes|on)$/i.test(cleanString(value, 20));
+}
+
+export function resolveCheckoutPaymentMethod(value, env = {}) {
+  const selected = cleanString(value || CHECKOUT_PAYMENT_METHODS.CARD, 40).toLowerCase();
+  if ([CHECKOUT_PAYMENT_METHODS.CARD, CHECKOUT_PAYMENT_METHODS.VISA, CHECKOUT_PAYMENT_METHODS.MASTERCARD].includes(selected)) {
+    return {
+      id: selected,
+      providerType: "card",
+      displayName: selected === CHECKOUT_PAYMENT_METHODS.MASTERCARD ? "Mastercard" : selected === CHECKOUT_PAYMENT_METHODS.VISA ? "Visa" : "Card",
+      stripePaymentMethodTypes: ["card"],
+    };
+  }
+  if (selected === CHECKOUT_PAYMENT_METHODS.KLARNA) {
+    if (!flagEnabled(env.ENABLE_STRIPE_KLARNA_CHECKOUT)) {
+      throw Object.assign(new Error("Klarna is not available for BlueMind Stripe Sandbox checkout yet. Please choose card payment."), { statusCode: 400 });
+    }
+    return {
+      id: selected,
+      providerType: "klarna",
+      displayName: "Klarna",
+      stripePaymentMethodTypes: ["klarna"],
+    };
+  }
+  if (selected === CHECKOUT_PAYMENT_METHODS.PAYPAL) {
+    if (!flagEnabled(env.ENABLE_STRIPE_PAYPAL_CHECKOUT)) {
+      throw Object.assign(new Error("PayPal is not integrated for BlueMind Stripe Sandbox checkout yet. Please choose card payment."), { statusCode: 400 });
+    }
+    return {
+      id: selected,
+      providerType: "paypal",
+      displayName: "PayPal",
+      stripePaymentMethodTypes: ["paypal"],
+    };
+  }
+  if (selected === CHECKOUT_PAYMENT_METHODS.APPLE_PAY || selected === CHECKOUT_PAYMENT_METHODS.GOOGLE_PAY) {
+    throw Object.assign(new Error("Apple Pay and Google Pay are card wallets in Stripe Checkout and cannot be isolated as a single hosted Checkout method here. Please choose card payment, or use a compatible wallet if Stripe shows it on your device."), { statusCode: 400 });
+  }
+  throw Object.assign(new Error("Invalid payment method."), { statusCode: 400 });
+}
+
 export function getStripe(env) {
   const key = cleanString(env.STRIPE_SECRET_KEY, 300);
   if (!key) throw Object.assign(new Error("Stripe is not configured."), { statusCode: 503 });
@@ -104,6 +156,38 @@ export function buildCheckoutDraft(body) {
   return { ...draft, amounts, stripePriceId: priceId };
 }
 
+export function buildCheckoutSessionParams({ draft, frontendBase, pendingCheckoutId, selectedPaymentMethod }) {
+  return {
+    mode: "payment",
+    customer_email: draft.verifiedEmail,
+    payment_method_types: selectedPaymentMethod.stripePaymentMethodTypes,
+    line_items: [buildStripeLineItem(draft)],
+    success_url: `${frontendBase}/quote?checkout_session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${frontendBase}/quote?checkout_cancelled=1`,
+    client_reference_id: pendingCheckoutId,
+    metadata: {
+      pendingCheckoutId,
+      packageId: draft.packageId,
+      paymentOption: draft.paymentOption,
+      selectedPaymentMethod: selectedPaymentMethod.id,
+      stripePaymentMethodType: selectedPaymentMethod.providerType,
+      expectedAmountOre: String(draft.amounts.amountDueNowOre),
+      currency: draft.amounts.currency,
+      testOnly: draft.packageId === "bluemind-test-package" ? "true" : "false",
+    },
+    payment_intent_data: {
+      metadata: {
+        pendingCheckoutId,
+        packageId: draft.packageId,
+        paymentOption: draft.paymentOption,
+        selectedPaymentMethod: selectedPaymentMethod.id,
+        stripePaymentMethodType: selectedPaymentMethod.providerType,
+        testOnly: draft.packageId === "bluemind-test-package" ? "true" : "false",
+      },
+    },
+  };
+}
+
 function getFrontendBaseUrl(env) {
   const configured = cleanString(env.FRONTEND_URL || env.PUBLIC_FRONTEND_URL, 300).replace(/\/$/, "");
   if (configured) return configured;
@@ -112,6 +196,7 @@ function getFrontendBaseUrl(env) {
 
 export async function createStripeCheckoutSession({ env, db, body }) {
   const draft = buildCheckoutDraft(body);
+  const selectedPaymentMethod = resolveCheckoutPaymentMethod(body?.paymentMethod, env);
   const emailVerification = await verifyEmailToken(db, {
     email: draft.verifiedEmail,
     checkoutAttemptId: body?.checkoutAttemptId,
@@ -143,6 +228,9 @@ export async function createStripeCheckoutSession({ env, db, body }) {
     requestedFeatures: draft.requestedFeatures,
     websiteDetails: draft.websiteDetails,
     customerLanguage: draft.customerLanguage,
+    selectedPaymentMethod: selectedPaymentMethod.id,
+    stripePaymentMethodType: selectedPaymentMethod.providerType,
+    paymentMethodDisplayName: selectedPaymentMethod.displayName,
     stripePriceId: draft.stripePriceId || null,
     createdAt: now,
     updatedAt: now,
@@ -150,30 +238,12 @@ export async function createStripeCheckoutSession({ env, db, body }) {
 
   await db.collection("checkoutSessions").insertOne(checkoutDoc);
 
-  const session = await stripe.checkout.sessions.create({
-    mode: "payment",
-    customer_email: draft.verifiedEmail,
-    line_items: [buildStripeLineItem(draft)],
-    success_url: `${frontendBase}/quote?checkout_session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${frontendBase}/quote?checkout_cancelled=1`,
-    client_reference_id: pendingCheckoutId,
-    metadata: {
-      pendingCheckoutId,
-      packageId: draft.packageId,
-      paymentOption: draft.paymentOption,
-      expectedAmountOre: String(draft.amounts.amountDueNowOre),
-      currency: draft.amounts.currency,
-      testOnly: draft.packageId === "bluemind-test-package" ? "true" : "false",
-    },
-    payment_intent_data: {
-      metadata: {
-        pendingCheckoutId,
-        packageId: draft.packageId,
-        paymentOption: draft.paymentOption,
-        testOnly: draft.packageId === "bluemind-test-package" ? "true" : "false",
-      },
-    },
-  });
+  const session = await stripe.checkout.sessions.create(buildCheckoutSessionParams({
+    draft,
+    frontendBase,
+    pendingCheckoutId,
+    selectedPaymentMethod,
+  }));
 
   await db.collection("checkoutSessions").updateOne(
     { _id: pendingCheckoutId },
@@ -189,6 +259,8 @@ export async function createStripeCheckoutSession({ env, db, body }) {
     amountDueNowOre: draft.amounts.amountDueNowOre,
     remainingBalanceOre: draft.amounts.remainingBalanceOre,
     currency: draft.amounts.currency,
+    selectedPaymentMethod: selectedPaymentMethod.id,
+    stripePaymentMethodType: selectedPaymentMethod.providerType,
   };
 }
 
@@ -244,6 +316,9 @@ async function createOrderForPaidSession({ env, db, event, session }) {
     websiteDetails: pending.websiteDetails,
     customerLanguage: pending.customerLanguage,
     paymentProvider: "stripe",
+    selectedPaymentMethod: pending.selectedPaymentMethod,
+    stripePaymentMethodType: pending.stripePaymentMethodType,
+    paymentMethodDisplayName: pending.paymentMethodDisplayName,
     paymentEventId: session.id,
     paymentReference: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id,
   });

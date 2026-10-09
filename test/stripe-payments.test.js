@@ -6,8 +6,10 @@ import {
   STRIPE_PRODUCT_IDS,
   buildStripeLineItem,
   buildCheckoutDraft,
+  buildCheckoutSessionParams,
   constructStripeEvent,
   getStripePriceId,
+  resolveCheckoutPaymentMethod,
 } from "../src/stripePayments.js";
 
 const expected = [
@@ -100,6 +102,40 @@ test("checkout draft validates package, payment option, email, project descripti
     verifiedEmail: "customer@example.com",
     projectDescription: "Build a website.",
   }));
+});
+
+test("checkout payment method selection resolves to explicit Stripe Checkout methods", () => {
+  assert.deepEqual(resolveCheckoutPaymentMethod("visa").stripePaymentMethodTypes, ["card"]);
+  assert.equal(resolveCheckoutPaymentMethod("mastercard").providerType, "card");
+  assert.equal(resolveCheckoutPaymentMethod("card").displayName, "Card");
+  assert.throws(() => resolveCheckoutPaymentMethod("apple-pay"), /cannot be isolated/);
+  assert.throws(() => resolveCheckoutPaymentMethod("google-pay"), /cannot be isolated/);
+  assert.throws(() => resolveCheckoutPaymentMethod("paypal"), /not integrated/);
+  assert.throws(() => resolveCheckoutPaymentMethod("klarna"), /not available/);
+  assert.deepEqual(resolveCheckoutPaymentMethod("klarna", { ENABLE_STRIPE_KLARNA_CHECKOUT: "true" }).stripePaymentMethodTypes, ["klarna"]);
+  assert.deepEqual(resolveCheckoutPaymentMethod("paypal", { ENABLE_STRIPE_PAYPAL_CHECKOUT: "true" }).stripePaymentMethodTypes, ["paypal"]);
+});
+
+test("checkout session params carry the selected method and exact server amount", () => {
+  const draft = buildCheckoutDraft({
+    packageId: "one-page-website",
+    paymentOption: "deposit_25",
+    customerName: "Test Customer",
+    verifiedEmail: "customer@example.com",
+    projectDescription: "Build a website.",
+  });
+  const params = buildCheckoutSessionParams({
+    draft,
+    frontendBase: "https://example.com",
+    pendingCheckoutId: "pending_123",
+    selectedPaymentMethod: resolveCheckoutPaymentMethod("visa"),
+  });
+
+  assert.deepEqual(params.payment_method_types, ["card"]);
+  assert.equal(params.line_items[0].price_data.unit_amount, 112250);
+  assert.equal(params.metadata.selectedPaymentMethod, "visa");
+  assert.equal(params.metadata.stripePaymentMethodType, "card");
+  assert.equal(params.payment_intent_data.metadata.selectedPaymentMethod, "visa");
 });
 
 test("Stripe webhook signatures are verified against the raw body", () => {

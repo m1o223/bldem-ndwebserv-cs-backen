@@ -291,6 +291,9 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
   const paymentProvider = cleanString(input.paymentProvider, 80) || "pending-provider";
   const paymentEventId = cleanString(input.paymentEventId, 180);
   const paymentReference = cleanString(input.paymentReference, 180);
+  const selectedPaymentMethod = cleanString(input.selectedPaymentMethod, 60);
+  const stripePaymentMethodType = cleanString(input.stripePaymentMethodType, 60);
+  const paymentMethodDisplayName = cleanString(input.paymentMethodDisplayName, 80);
   const deliveryDate = input.deliveryDate ? new Date(input.deliveryDate) : null;
   const createdAt = new Date(paidAt);
 
@@ -333,6 +336,9 @@ export function buildOrderDocumentFromVerifiedPayment(input, { orderNumber, paid
     currency: amounts.currency,
     paymentOption: amounts.paymentOption,
     paymentProvider,
+    selectedPaymentMethod: selectedPaymentMethod || undefined,
+    stripePaymentMethodType: stripePaymentMethodType || undefined,
+    paymentMethodDisplayName: paymentMethodDisplayName || undefined,
     paymentEventId,
     paymentReference: paymentReference || undefined,
     paymentStatus,
