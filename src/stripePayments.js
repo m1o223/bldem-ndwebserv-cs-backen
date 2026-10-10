@@ -10,26 +10,6 @@ export const STRIPE_PRODUCT_IDS = {
 };
 
 export const STRIPE_PRICE_IDS = {
-  "one-page-website": {
-    full: "price_1UOBpgIO0JggS4KFPhchQ8wi",
-    deposit_50: "price_1UOBqLIO0JggS4KFWH9TbCFO",
-  },
-  "small-website": {
-    full: "price_1UOBpqIO0JggS4KFwRdMBOPa",
-    deposit_50: "price_1UOBqSIO0JggS4KFROp3PvDj",
-  },
-  "business-website": {
-    full: "price_1UOBpwIO0JggS4KFmwOGdoI8",
-    deposit_50: "price_1UOBqYIO0JggS4KFdhsiWNGM",
-  },
-  "business-plus": {
-    full: "price_1UOBq3IO0JggS4KFnyz9YNyV",
-    deposit_50: "price_1UOBqeIO0JggS4KFWPqatEaO",
-  },
-  "online-store": {
-    full: "price_1UOBq9IO0JggS4KF8edENRhP",
-    deposit_50: "price_1UOBqlIO0JggS4KFxaTaFXDp",
-  },
   "bluemind-test-package": {
     full: "price_1UOEk9IO0JggS4KF8za1GpDy",
   },
@@ -133,18 +113,19 @@ export function getStripe(env) {
 export function getStripePriceId(packageId, paymentOption) {
   const entry = STRIPE_PRICE_IDS[packageId];
   const option = normalizePaymentOption(paymentOption);
-  if (option === PAYMENT_OPTIONS.DEPOSIT_25) {
-    throw Object.assign(new Error("25% deposits use a server-calculated Stripe Checkout amount."), { statusCode: 400 });
-  }
   const priceId = entry?.[option];
-  if (!priceId) throw Object.assign(new Error("Package is not configured for Stripe Checkout."), { statusCode: 400 });
+  if (!priceId) throw Object.assign(new Error("Package uses server-calculated Stripe Checkout amount."), { statusCode: 400 });
   return priceId;
 }
 
 export function buildStripeLineItem(draft) {
-  if (draft.paymentOption !== PAYMENT_OPTIONS.DEPOSIT_25) {
-    return { price: draft.stripePriceId, quantity: 1 };
-  }
+  if (draft.stripePriceId) return { price: draft.stripePriceId, quantity: 1 };
+
+  const suffix = draft.paymentOption === PAYMENT_OPTIONS.DEPOSIT_25
+    ? "25% Deposit"
+    : draft.paymentOption === PAYMENT_OPTIONS.DEPOSIT_50
+      ? "50% Deposit"
+      : "Full Payment";
 
   return {
     quantity: 1,
@@ -152,7 +133,7 @@ export function buildStripeLineItem(draft) {
       currency: draft.amounts.currency.toLowerCase(),
       unit_amount: draft.amounts.amountDueNowOre,
       product_data: {
-        name: `${draft.amounts.packageName} - 25% Deposit`,
+        name: `${draft.amounts.packageName} - ${suffix}`,
         metadata: {
           packageId: draft.packageId,
           paymentOption: draft.paymentOption,
@@ -176,9 +157,9 @@ export function buildCheckoutDraft(body) {
     customerLanguage: body?.customerLanguage || body?.language,
   });
   const amounts = calculatePaymentAmounts(draft.packageId, draft.paymentOption);
-  const priceId = draft.paymentOption === PAYMENT_OPTIONS.DEPOSIT_25
-    ? null
-    : getStripePriceId(draft.packageId, draft.paymentOption);
+  const priceId = draft.packageId === "bluemind-test-package"
+    ? getStripePriceId(draft.packageId, draft.paymentOption)
+    : null;
   return { ...draft, amounts, stripePriceId: priceId };
 }
 

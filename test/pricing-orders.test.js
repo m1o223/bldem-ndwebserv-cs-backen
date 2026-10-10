@@ -21,16 +21,14 @@ import {
 import { ValidationError } from "../src/validation.js";
 
 const expectedPrices = [
-  ["one-page-website", "One Page Website", 449000, 224500, 112250],
-  ["small-website", "Small Website", 599000, 299500, 149750],
-  ["business-website", "Business Website", 749000, 374500, 187250],
-  ["business-plus", "Business Plus", 999000, 499500, 249750],
-  ["online-store", "Online Store", 1299000, 649500, 324750],
+  ["showcase-website", "Showcase Website", 499000, 249500, 124750],
+  ["business-website", "Business Website", 899000, 449500, 224750],
+  ["online-store", "Online Store", 1499000, 749500, 374750],
 ];
 
 test("website pricing catalog matches the agreed package prices", () => {
   const active = listActiveWebsitePackages();
-  assert.equal(active.length, 5);
+  assert.equal(active.length, 3);
 
   for (const [packageId, name, totalAmountOre, depositOre, quarterDepositOre] of expectedPrices) {
     const item = getWebsitePackage(packageId);
@@ -59,12 +57,17 @@ test("test package is available only through the full-payment sandbox path", () 
 });
 
 test("SEK formatting preserves öre for fractional deposit amounts", () => {
-  assert.equal(formatSek(449000).replace(/\s/g, " "), "4 490 SEK");
-  assert.equal(formatSek(112250).replace(/\s/g, " "), "1 122,50 SEK");
+  assert.equal(formatSek(499000).replace(/\s/g, " "), "4 990 SEK");
+  assert.equal(formatSek(124750).replace(/\s/g, " "), "1 247,50 SEK");
 });
 
 test("custom quote package and invalid package ids cannot produce payment amounts", () => {
   assert.throws(() => calculatePaymentAmounts("custom-website", "full"), /Invalid fixed-price package/);
+  assert.throws(() => calculatePaymentAmounts("one-page-website", "full"), /Invalid fixed-price package/);
+  assert.throws(() => calculatePaymentAmounts("small-website", "full"), /Invalid fixed-price package/);
+  assert.throws(() => calculatePaymentAmounts("business-plus", "full"), /Invalid fixed-price package/);
+  assert.throws(() => calculatePaymentAmounts("online-store-standard", "full"), /Invalid fixed-price package/);
+  assert.throws(() => calculatePaymentAmounts("online-store-advanced", "full"), /Invalid fixed-price package/);
   assert.throws(() => calculatePaymentAmounts("missing-package", "full"), /Invalid fixed-price package/);
   assert.throws(() => calculatePaymentAmounts("business-website", "monthly"), /Invalid payment option/);
 });
@@ -94,9 +97,9 @@ test("verified payment builds a paid order with a price snapshot and project det
 
   assert.equal(order.orderNumber, "#516");
   assert.equal(order.packageId, "business-website");
-  assert.equal(order.totalAmountOre, 749000);
-  assert.equal(order.amountPaidOre, 187250);
-  assert.equal(order.remainingBalanceOre, 561750);
+  assert.equal(order.totalAmountOre, 899000);
+  assert.equal(order.amountPaidOre, 224750);
+  assert.equal(order.remainingBalanceOre, 674250);
   assert.equal(order.paymentOption, "deposit_25");
   assert.equal(order.selectedPaymentMethod, "visa");
   assert.equal(order.stripePaymentMethodType, "card");
@@ -105,7 +108,7 @@ test("verified payment builds a paid order with a price snapshot and project det
   assert.equal(order.projectStatus, "Pending Review");
   assert.equal(order.reviewStatus, "pending_review");
   assert.equal(order.verifiedEmail, "customer@example.com");
-  assert.equal(order.priceSnapshot.packagePriceOre, 749000);
+  assert.equal(order.priceSnapshot.packagePriceOre, 899000);
   assert.deepEqual(order.requestedFeatures, ["Contact Form", "Gallery"]);
   assert.equal(order.events[0].type, "deposit_received");
   assert.equal(order.careEligibility.eligible, true);

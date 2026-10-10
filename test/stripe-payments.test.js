@@ -16,19 +16,15 @@ import {
 } from "../src/stripePayments.js";
 
 const expected = [
-  ["one-page-website", 449000, 224500, 112250],
-  ["small-website", 599000, 299500, 149750],
-  ["business-website", 749000, 374500, 187250],
-  ["business-plus", 999000, 499500, 249750],
-  ["online-store", 1299000, 649500, 324750],
+  ["showcase-website", 499000, 249500, 124750],
+  ["business-website", 899000, 449500, 224750],
+  ["online-store", 1499000, 749500, 374750],
 ];
 
-test("Stripe price mapping contains full and 50% deposit prices for every fixed website package", () => {
+test("public website packages use server-calculated Stripe Checkout amounts", () => {
   for (const [packageId] of expected) {
-    assert.match(getStripePriceId(packageId, "full"), /^price_/);
-    assert.match(getStripePriceId(packageId, "deposit"), /^price_/);
-    assert.match(getStripePriceId(packageId, "deposit_50"), /^price_/);
-    assert.notEqual(STRIPE_PRICE_IDS[packageId].full, STRIPE_PRICE_IDS[packageId].deposit_50);
+    assert.throws(() => getStripePriceId(packageId, "full"), /server-calculated Stripe Checkout amount/);
+    assert.throws(() => getStripePriceId(packageId, "deposit_50"), /server-calculated Stripe Checkout amount/);
     assert.throws(() => getStripePriceId(packageId, "deposit_25"), /server-calculated Stripe Checkout amount/);
   }
 });
@@ -36,7 +32,7 @@ test("Stripe price mapping contains full and 50% deposit prices for every fixed 
 test("Stripe mapping contains the BlueMind test package product and one-time price", () => {
   assert.match(STRIPE_PRODUCT_IDS["bluemind-test-package"], /^prod_/);
   assert.match(getStripePriceId("bluemind-test-package", "full"), /^price_/);
-  assert.throws(() => getStripePriceId("bluemind-test-package", "deposit"), /Package is not configured for Stripe Checkout/);
+  assert.throws(() => getStripePriceId("bluemind-test-package", "deposit"), /server-calculated Stripe Checkout amount/);
   assert.throws(() => getStripePriceId("bluemind-test-package", "deposit_25"), /server-calculated Stripe Checkout amount/);
 
   const draft = buildCheckoutDraft({
@@ -84,7 +80,11 @@ test("checkout draft validates package, payment option, email, project descripti
     });
     assert.equal(quarter.amounts.amountDueNowOre, quarterDepositOre);
     assert.equal(quarter.amounts.remainingBalanceOre, totalAmountOre - quarterDepositOre);
+    assert.equal(full.stripePriceId, null);
+    assert.equal(deposit.stripePriceId, null);
     assert.equal(quarter.stripePriceId, null);
+    assert.equal(buildStripeLineItem(full).price_data.unit_amount, totalAmountOre);
+    assert.equal(buildStripeLineItem(deposit).price_data.unit_amount, depositOre);
     const lineItem = buildStripeLineItem(quarter);
     assert.equal(lineItem.price_data.unit_amount, quarterDepositOre);
     assert.equal(lineItem.price_data.currency, "sek");
@@ -121,7 +121,7 @@ test("checkout payment method selection resolves to explicit Stripe Checkout met
 
 test("checkout session params carry the selected method and exact server amount", () => {
   const draft = buildCheckoutDraft({
-    packageId: "one-page-website",
+    packageId: "showcase-website",
     paymentOption: "deposit_25",
     customerName: "Test Customer",
     verifiedEmail: "customer@example.com",
@@ -135,7 +135,7 @@ test("checkout session params carry the selected method and exact server amount"
   });
 
   assert.deepEqual(params.payment_method_types, ["card"]);
-  assert.equal(params.line_items[0].price_data.unit_amount, 112250);
+  assert.equal(params.line_items[0].price_data.unit_amount, 124750);
   assert.equal(params.metadata.selectedPaymentMethod, "visa");
   assert.equal(params.metadata.stripePaymentMethodType, "card");
   assert.equal(params.payment_intent_data.metadata.selectedPaymentMethod, "visa");
