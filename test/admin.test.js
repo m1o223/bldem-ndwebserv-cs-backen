@@ -13,6 +13,9 @@ const env = {
   ADMIN_EMAIL: "admin@example.com",
   ADMIN_M_PASSWORD_HASH: bcrypt.hashSync("m-password", 10),
   ADMIN_R_PASSWORD_HASH: bcrypt.hashSync("r-password", 10),
+  WORKSPACE_AHMED_PASSWORD_HASH: bcrypt.hashSync("ahmed-password", 10),
+  WORKSPACE_AMMAR_PASSWORD_HASH: bcrypt.hashSync("ammar-password", 10),
+  WORKSPACE_PATRICK_PASSWORD_HASH: bcrypt.hashSync("patrick-password", 10),
   ADMIN_SESSION_SECRET: "test-secret-with-at-least-thirty-two-characters",
 };
 
@@ -42,7 +45,11 @@ test("admin login validates two employee passwords and creates an httpOnly sessi
       body: JSON.stringify({ email: "admin@example.com", password: "m-password" }),
     });
     assert.equal(accepted.status, 200);
-    assert.deepEqual(await accepted.json(), { success: true, admin: { email: "admin@example.com", employeeId: "M", displayName: "Mohmed" } });
+    assert.deepEqual(await accepted.json(), {
+      success: true,
+      admin: { access: "admin", email: "admin@example.com", employeeId: "M", displayName: "Mohmed", title: "Admin" },
+      employee: { access: "admin", email: "admin@example.com", employeeId: "M", displayName: "Mohmed", title: "Admin" },
+    });
     assert.equal(accepted.headers.get("access-control-allow-credentials"), "true");
     assert.match(accepted.headers.get("set-cookie") || "", /HttpOnly/);
 
@@ -52,7 +59,54 @@ test("admin login validates two employee passwords and creates an httpOnly sessi
       body: JSON.stringify({ email: "admin@example.com", password: "r-password" }),
     });
     assert.equal(second.status, 200);
-    assert.deepEqual(await second.json(), { success: true, admin: { email: "admin@example.com", employeeId: "R", displayName: "Rokaia" } });
+    assert.deepEqual(await second.json(), {
+      success: true,
+      admin: { access: "admin", email: "admin@example.com", employeeId: "R", displayName: "Rokaia", title: "Admin" },
+      employee: { access: "admin", email: "admin@example.com", employeeId: "R", displayName: "Rokaia", title: "Admin" },
+    });
+  });
+});
+
+test("workspace employee login creates non-admin sessions that cannot access admin data", async () => {
+  await withServer(async base => {
+    const login = await fetch(`${base}/api/admin/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://admin-bluemindwebservise.vercel.app" },
+      body: JSON.stringify({ email: "750@gmail.com", password: "ahmed-password" }),
+    });
+    assert.equal(login.status, 200);
+    const cookie = login.headers.get("set-cookie") || "";
+    assert.match(cookie, /HttpOnly/);
+    assert.deepEqual(await login.json(), {
+      success: true,
+      admin: null,
+      employee: {
+        access: "employee",
+        email: "750@gmail.com",
+        employeeId: "AHMED",
+        displayName: "Ahmed",
+        title: "Developer",
+      },
+    });
+
+    const session = await fetch(`${base}/api/admin/session`, { headers: { Cookie: cookie.split(";")[0] } });
+    assert.equal(session.status, 200);
+    assert.deepEqual(await session.json(), {
+      success: true,
+      authenticated: true,
+      admin: null,
+      employee: {
+        access: "employee",
+        email: "750@gmail.com",
+        employeeId: "AHMED",
+        displayName: "Ahmed",
+        title: "Developer",
+      },
+    });
+
+    const orders = await fetch(`${base}/api/admin/orders`, { headers: { Cookie: cookie.split(";")[0] } });
+    assert.equal(orders.status, 401);
+    assert.deepEqual(await orders.json(), { success: false, error: "Authentication required." });
   });
 });
 
@@ -66,8 +120,8 @@ test("admin session and logout use the session cookie", async () => {
     assert.deepEqual(await session.json(), {
       success: true,
       authenticated: true,
-      admin: { email: "admin@example.com", employeeId: "R", displayName: "Rokaia" },
-      employee: { email: "admin@example.com", employeeId: "R", displayName: "Rokaia" },
+      admin: { access: "admin", email: "admin@example.com", employeeId: "R", displayName: "Rokaia", title: "Admin" },
+      employee: { access: "admin", email: "admin@example.com", employeeId: "R", displayName: "Rokaia", title: "Admin" },
     });
 
     const logout = await fetch(`${base}/api/admin/logout`, { method: "POST" });

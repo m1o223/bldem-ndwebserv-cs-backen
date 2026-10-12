@@ -10,7 +10,8 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
     "test": "node --test",
-    "seed:test-order": "node --env-file-if-exists=.env src/seed-test-order.js"
+    "seed:test-order": "node --env-file-if-exists=.env src/seed-test-order.js",
+    "hash:password": "node src/hash-password.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

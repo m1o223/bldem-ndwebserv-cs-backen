@@ -6,6 +6,7 @@ import {
   buildAdminSessionCookie,
   createAdminSession,
   isAdminRequest,
+  isWorkspaceRequest,
   verifyAdminCredentials,
   ADMIN_EMPLOYEES,
   getAdminEmployee,
@@ -176,6 +177,12 @@ async function ensureCollections(db) {
 function serializeAdmin(env, sessionOrAdmin) {
   if (!sessionOrAdmin) return null;
   return buildAdminIdentity(env, sessionOrAdmin.employeeId);
+}
+
+function serializeWorkspaceUser(env, sessionOrUser) {
+  if (!sessionOrUser) return null;
+  if (sessionOrUser.access === "admin") return buildAdminIdentity(env, sessionOrUser.employeeId);
+  return sessionOrUser;
 }
 
 function serializePresence(doc, now = new Date()) {
@@ -410,13 +417,17 @@ async function handleAdminLogin(req, res, env) {
   }
 
   const body = await readJsonBody(req);
-  const admin = await verifyAdminCredentials(env, body?.email, body?.password);
-  if (!admin) return json(res, 401, { success: false, error: "Invalid email or password." });
+  const user = await verifyAdminCredentials(env, body?.email, body?.password);
+  if (!user) return json(res, 401, { success: false, error: "Invalid email or password." });
 
-  const token = createAdminSession(env, admin.employeeId);
-  await updateAdminPresence(env, admin.employeeId);
+  const token = createAdminSession(env, user);
+  if (user.access === "admin") await updateAdminPresence(env, user.employeeId);
   res.setHeader("Set-Cookie", buildAdminSessionCookie(token, env));
-  return json(res, 200, { success: true, admin });
+  return json(res, 200, {
+    success: true,
+    admin: user.access === "admin" ? user : null,
+    employee: user,
+  });
 }
 
 async function handleAdminLogout(req, res, env) {
@@ -803,12 +814,12 @@ export function createHealthServer(env = process.env) {
           res.setHeader("Allow", "GET, OPTIONS");
           return json(res, 405, { success: false, error: "Method not allowed" });
         }
-        const session = isAdminRequest(req, env);
+        const session = isWorkspaceRequest(req, env);
         return json(res, 200, {
           success: true,
           authenticated: Boolean(session),
-          admin: session ? serializeAdmin(env, session) : null,
-          employee: session ? serializeAdmin(env, session) : null,
+          admin: session?.access === "admin" ? serializeAdmin(env, session) : null,
+          employee: session ? serializeWorkspaceUser(env, session) : null,
         });
       }
       if (route === "/api/admin/presence") return await handleAdminPresence(req, res, env);
