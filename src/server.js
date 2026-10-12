@@ -385,14 +385,14 @@ async function getTodayWorkSummary(db, employeeId) {
   };
 }
 
-function requireAhmedWorkspace(req, res, env) {
+function requireEmployeeWorkspace(req, res, env) {
   const session = isWorkspaceRequest(req, env);
   if (!session) {
     json(res, 401, { success: false, error: "Authentication required." });
     return null;
   }
-  if (session.access !== "employee" || session.employeeId !== "AHMED") {
-    json(res, 403, { success: false, error: "This workspace is only available to Ahmed." });
+  if (session.access !== "employee") {
+    json(res, 403, { success: false, error: "This workspace is only available to employee accounts." });
     return null;
   }
   return session;
@@ -411,7 +411,7 @@ async function handleWorkspaceOverview(req, res, env) {
     res.setHeader("Allow", "GET, OPTIONS");
     return json(res, 405, { success: false, error: "Method not allowed" });
   }
-  const employee = requireAhmedWorkspace(req, res, env);
+  const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
   const db = await getDatabase(env);
   await ensureCollections(db);
@@ -446,7 +446,7 @@ async function handleWorkspaceOverview(req, res, env) {
 }
 
 async function handleWorkspaceTasks(req, res, env) {
-  const employee = requireAhmedWorkspace(req, res, env);
+  const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
   const db = await getDatabase(env);
   await ensureCollections(db);
@@ -459,7 +459,7 @@ async function handleWorkspaceTasks(req, res, env) {
 }
 
 async function handleWorkspaceTaskDetail(req, res, env, taskId) {
-  const employee = requireAhmedWorkspace(req, res, env);
+  const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
   const db = await getDatabase(env);
   await ensureCollections(db);
@@ -499,7 +499,7 @@ async function handleWorkspaceCollection(req, res, env, collectionName, filter, 
     res.setHeader("Allow", "GET, OPTIONS");
     return json(res, 405, { success: false, error: "Method not allowed" });
   }
-  const employee = requireAhmedWorkspace(req, res, env);
+  const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
   const db = await getDatabase(env);
   await ensureCollections(db);
@@ -508,7 +508,7 @@ async function handleWorkspaceCollection(req, res, env, collectionName, filter, 
 }
 
 async function handleWorkspaceMessages(req, res, env) {
-  const employee = requireAhmedWorkspace(req, res, env);
+  const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
   const db = await getDatabase(env);
   await ensureCollections(db);
@@ -531,7 +531,7 @@ async function handleWorkspaceMessages(req, res, env) {
 }
 
 async function handleWorkspaceWorkSession(req, res, env) {
-  const employee = requireAhmedWorkspace(req, res, env);
+  const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
   const db = await getDatabase(env);
   await ensureCollections(db);
@@ -574,7 +574,7 @@ async function handleWorkspaceWorkSession(req, res, env) {
 }
 
 async function handleWorkspaceCheckIns(req, res, env) {
-  const employee = requireAhmedWorkspace(req, res, env);
+  const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
   const db = await getDatabase(env);
   await ensureCollections(db);
@@ -598,7 +598,7 @@ async function handleWorkspaceProfile(req, res, env) {
     res.setHeader("Allow", "GET, OPTIONS");
     return json(res, 405, { success: false, error: "Method not allowed" });
   }
-  const employee = requireAhmedWorkspace(req, res, env);
+  const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
   return json(res, 200, { success: true, profile: { ...employee, preferredLanguage: "English", timezone: "Europe/Stockholm", permissions: ["workspace:read_assigned", "tasks:update_own", "messages:management", "work_sessions:self"] } });
 }

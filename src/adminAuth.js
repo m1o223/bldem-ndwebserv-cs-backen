@@ -15,7 +15,7 @@ export const WORKSPACE_EMPLOYEES = [
     displayName: "Ahmed",
     email: "750@gmail.com",
     access: "employee",
-    title: "Developer",
+    title: "iOS Developer",
     passwordHashEnv: "WORKSPACE_AHMED_PASSWORD_HASH",
   },
   {
@@ -23,7 +23,7 @@ export const WORKSPACE_EMPLOYEES = [
     displayName: "Ammar",
     email: "ammar@bluemindwebservice.com",
     access: "employee",
-    title: "Designer",
+    title: "UI/UX Designer",
     passwordHashEnv: "WORKSPACE_AMMAR_PASSWORD_HASH",
   },
   {
@@ -31,7 +31,7 @@ export const WORKSPACE_EMPLOYEES = [
     displayName: "Patrick Jane",
     email: "patrick@bluemindwebservice.com",
     access: "employee",
-    title: "Social Media Manager",
+    title: "Android Developer",
     passwordHashEnv: "WORKSPACE_PATRICK_PASSWORD_HASH",
   },
 ];

@@ -67,46 +67,68 @@ test("admin login validates two employee passwords and creates an httpOnly sessi
   });
 });
 
-test("workspace employee login creates non-admin sessions that cannot access admin data", async () => {
+test("workspace employee login creates role-specific non-admin sessions that cannot access admin data", async () => {
   await withServer(async base => {
-    const login = await fetch(`${base}/api/admin/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Origin: "https://admin-bluemindwebservise.vercel.app" },
-      body: JSON.stringify({ email: "750@gmail.com", password: "ahmed-password" }),
-    });
-    assert.equal(login.status, 200);
-    const cookie = login.headers.get("set-cookie") || "";
-    assert.match(cookie, /HttpOnly/);
-    assert.deepEqual(await login.json(), {
-      success: true,
-      admin: null,
-      employee: {
-        access: "employee",
+    const employees = [
+      {
         email: "750@gmail.com",
+        password: "ahmed-password",
+        access: "employee",
         employeeId: "AHMED",
         displayName: "Ahmed",
-        title: "Developer",
+        title: "iOS Developer",
       },
-    });
-
-    const session = await fetch(`${base}/api/admin/session`, { headers: { Cookie: cookie.split(";")[0] } });
-    assert.equal(session.status, 200);
-    assert.deepEqual(await session.json(), {
-      success: true,
-      authenticated: true,
-      admin: null,
-      employee: {
+      {
+        email: "ammar@bluemindwebservice.com",
+        password: "ammar-password",
         access: "employee",
-        email: "750@gmail.com",
-        employeeId: "AHMED",
-        displayName: "Ahmed",
-        title: "Developer",
+        employeeId: "AMMAR",
+        displayName: "Ammar",
+        title: "UI/UX Designer",
       },
-    });
+      {
+        email: "patrick@bluemindwebservice.com",
+        password: "patrick-password",
+        access: "employee",
+        employeeId: "PATRICK",
+        displayName: "Patrick Jane",
+        title: "Android Developer",
+      },
+    ];
 
-    const orders = await fetch(`${base}/api/admin/orders`, { headers: { Cookie: cookie.split(";")[0] } });
-    assert.equal(orders.status, 401);
-    assert.deepEqual(await orders.json(), { success: false, error: "Authentication required." });
+    for (const employee of employees) {
+      const login = await fetch(`${base}/api/admin/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: "https://admin-bluemindwebservise.vercel.app" },
+        body: JSON.stringify({ email: employee.email, password: employee.password }),
+      });
+      assert.equal(login.status, 200);
+      const cookie = login.headers.get("set-cookie") || "";
+      assert.match(cookie, /HttpOnly/);
+      const { password, ...expectedEmployee } = employee;
+      assert.deepEqual(await login.json(), {
+        success: true,
+        admin: null,
+        employee: expectedEmployee,
+      });
+
+      const session = await fetch(`${base}/api/admin/session`, { headers: { Cookie: cookie.split(";")[0] } });
+      assert.equal(session.status, 200);
+      assert.deepEqual(await session.json(), {
+        success: true,
+        authenticated: true,
+        admin: null,
+        employee: expectedEmployee,
+      });
+
+      const workspace = await fetch(`${base}/api/workspace/profile`, { headers: { Cookie: cookie.split(";")[0] } });
+      assert.equal(workspace.status, 200);
+      assert.equal((await workspace.json()).profile.employeeId, employee.employeeId);
+
+      const orders = await fetch(`${base}/api/admin/orders`, { headers: { Cookie: cookie.split(";")[0] } });
+      assert.equal(orders.status, 401);
+      assert.deepEqual(await orders.json(), { success: false, error: "Authentication required." });
+    }
   });
 });
 
