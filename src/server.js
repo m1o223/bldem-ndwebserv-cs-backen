@@ -158,6 +158,13 @@ async function ensureCollections(db) {
     "careSubscriptionCheckouts",
     "careNotifications",
     "checkoutSessions",
+    "workspaceTasks",
+    "workspaceProjects",
+    "workspaceMessages",
+    "workspaceMeetings",
+    "workspaceFiles",
+    "workspaceWorkSessions",
+    "workspaceCheckIns",
   ]) {
     if (!existing.has(name)) await db.createCollection(name);
   }
@@ -171,6 +178,13 @@ async function ensureCollections(db) {
   await db.collection("careSubscriptions").createIndex({ customerEmail: 1, updatedAt: -1 });
   await db.collection("careSubscriptions").createIndex({ orderNumber: 1, planId: 1, testMode: 1 });
   await db.collection("careNotifications").createIndex({ subscriptionId: 1, type: 1, dedupeKey: 1 }, { unique: true });
+  await db.collection("workspaceTasks").createIndex({ assigneeId: 1, status: 1, deadline: 1 });
+  await db.collection("workspaceProjects").createIndex({ assigneeIds: 1, status: 1 });
+  await db.collection("workspaceMessages").createIndex({ participantIds: 1, createdAt: -1 });
+  await db.collection("workspaceMeetings").createIndex({ participantIds: 1, startsAt: 1 });
+  await db.collection("workspaceFiles").createIndex({ employeeIds: 1, uploadedAt: -1 });
+  await db.collection("workspaceWorkSessions").createIndex({ employeeId: 1, startedAt: -1 });
+  await db.collection("workspaceCheckIns").createIndex({ employeeId: 1, createdAt: -1 });
 }
 
 
@@ -227,6 +241,383 @@ async function getAdminPresence(env) {
   const now = new Date();
   return ADMIN_EMPLOYEES.map(employee => serializePresence(byId.get(employee.employeeId) || employee, now));
 }
+
+const WORKSPACE_TASK_STATUSES = new Set(["To Do", "In Progress", "Waiting for Review", "Changes Requested", "Completed"]);
+const WORKSPACE_PRIORITIES = new Set(["Low", "Medium", "High", "Urgent"]);
+const MANAGER_RECIPIENTS = new Set(["M", "R"]);
+
+function serializeWorkspaceDate(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function serializeWorkspaceTask(task) {
+  return {
+    id: String(task._id || task.taskId || ""),
+    taskId: task.taskId || String(task._id || ""),
+    title: task.title || "Untitled task",
+    description: task.description || "",
+    projectName: task.projectName || "Unassigned project",
+    assignedBy: task.assignedBy || "Management",
+    assignedAt: serializeWorkspaceDate(task.assignedAt),
+    deadline: serializeWorkspaceDate(task.deadline),
+    priority: WORKSPACE_PRIORITIES.has(task.priority) ? task.priority : "Medium",
+    attachedFiles: Array.isArray(task.attachedFiles) ? task.attachedFiles : [],
+    referenceDesigns: Array.isArray(task.referenceDesigns) ? task.referenceDesigns : [],
+    status: WORKSPACE_TASK_STATUSES.has(task.status) ? task.status : "To Do",
+    progress: Number.isFinite(task.progress) ? Math.max(0, Math.min(100, Number(task.progress))) : 0,
+    githubLink: task.githubLink || "",
+    comments: Array.isArray(task.comments) ? task.comments.map(comment => ({
+      authorId: comment.authorId || "system",
+      authorName: comment.authorName || "BlueMind Workspace",
+      message: comment.message || "",
+      createdAt: serializeWorkspaceDate(comment.createdAt),
+    })) : [],
+    submittedAt: serializeWorkspaceDate(task.submittedAt),
+  };
+}
+
+function serializeWorkspaceProject(project) {
+  return {
+    id: String(project._id || project.projectId || ""),
+    projectId: project.projectId || String(project._id || ""),
+    name: project.name || "Untitled project",
+    description: project.description || "",
+    deadlines: Array.isArray(project.deadlines) ? project.deadlines : [],
+    approvedDesigns: Array.isArray(project.approvedDesigns) ? project.approvedDesigns : [],
+    files: Array.isArray(project.files) ? project.files : [],
+    githubLinks: Array.isArray(project.githubLinks) ? project.githubLinks : [],
+    developmentStatus: project.developmentStatus || "Not started",
+    managerNotes: project.managerNotes || "",
+  };
+}
+
+function serializeWorkspaceMessage(message) {
+  return {
+    id: String(message._id || ""),
+    projectId: message.projectId || null,
+    fromId: message.fromId,
+    toId: message.toId,
+    body: message.body || "",
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    readBy: Array.isArray(message.readBy) ? message.readBy : [],
+    createdAt: serializeWorkspaceDate(message.createdAt),
+  };
+}
+
+function serializeWorkspaceMeeting(meeting) {
+  return {
+    id: String(meeting._id || ""),
+    purpose: meeting.purpose || "Workspace meeting",
+    startsAt: serializeWorkspaceDate(meeting.startsAt),
+    endsAt: serializeWorkspaceDate(meeting.endsAt),
+    participants: Array.isArray(meeting.participants) ? meeting.participants : [],
+    joinUrl: meeting.joinUrl || "",
+    notes: meeting.notes || "",
+  };
+}
+
+function serializeWorkspaceFile(file) {
+  return {
+    id: String(file._id || ""),
+    fileName: file.fileName || "Untitled file",
+    projectName: file.projectName || "",
+    fileType: file.fileType || "file",
+    downloadUrl: file.downloadUrl || "",
+    uploadedBy: file.uploadedBy || "BlueMind Workspace",
+    uploadedAt: serializeWorkspaceDate(file.uploadedAt),
+  };
+}
+
+function activeWorkMilliseconds(session, now = new Date()) {
+  if (!session?.startedAt) return 0;
+  const ranges = Array.isArray(session.activeRanges) ? session.activeRanges : [];
+  return ranges.reduce((total, range) => {
+    const start = range.start ? new Date(range.start) : null;
+    const end = range.end ? new Date(range.end) : now;
+    if (!start || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return total;
+    return total + (end.getTime() - start.getTime());
+  }, 0);
+}
+
+function breakMilliseconds(session, now = new Date()) {
+  const ranges = Array.isArray(session.breakRanges) ? session.breakRanges : [];
+  return ranges.reduce((total, range) => {
+    const start = range.start ? new Date(range.start) : null;
+    const end = range.end ? new Date(range.end) : now;
+    if (!start || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return total;
+    return total + (end.getTime() - start.getTime());
+  }, 0);
+}
+
+function serializeWorkSession(session) {
+  if (!session) return null;
+  const now = new Date();
+  return {
+    id: String(session._id || ""),
+    employeeId: session.employeeId,
+    status: session.status || "ended",
+    currentTaskId: session.currentTaskId || "",
+    startedAt: serializeWorkspaceDate(session.startedAt),
+    pausedAt: serializeWorkspaceDate(session.pausedAt),
+    endedAt: serializeWorkspaceDate(session.endedAt),
+    activeMilliseconds: activeWorkMilliseconds(session, now),
+    breakMilliseconds: breakMilliseconds(session, now),
+  };
+}
+
+function todayRange() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+}
+
+async function getTodayWorkSummary(db, employeeId) {
+  const { start, end } = todayRange();
+  const sessions = await db.collection("workspaceWorkSessions").find({ employeeId, startedAt: { $gte: start, $lt: end } }).toArray();
+  return {
+    activeMilliseconds: sessions.reduce((total, session) => total + activeWorkMilliseconds(session), 0),
+    breakMilliseconds: sessions.reduce((total, session) => total + breakMilliseconds(session), 0),
+    sessions: sessions.map(serializeWorkSession),
+  };
+}
+
+function requireAhmedWorkspace(req, res, env) {
+  const session = isWorkspaceRequest(req, env);
+  if (!session) {
+    json(res, 401, { success: false, error: "Authentication required." });
+    return null;
+  }
+  if (session.access !== "employee" || session.employeeId !== "AHMED") {
+    json(res, 403, { success: false, error: "This workspace is only available to Ahmed." });
+    return null;
+  }
+  return session;
+}
+
+function cleanWorkspaceText(value, max = 2000) {
+  return String(value || "").replace(/[<>]/g, "").trim().slice(0, max);
+}
+
+async function findAssignedTask(db, employeeId, taskId) {
+  return await db.collection("workspaceTasks").findOne({ taskId, assigneeId: employeeId });
+}
+
+async function handleWorkspaceOverview(req, res, env) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const employee = requireAhmedWorkspace(req, res, env);
+  if (!employee) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const [tasks, projects, messages, meetings, files, workSummary] = await Promise.all([
+    db.collection("workspaceTasks").find({ assigneeId: employee.employeeId }).sort({ deadline: 1 }).toArray(),
+    db.collection("workspaceProjects").find({ assigneeIds: employee.employeeId }).sort({ name: 1 }).toArray(),
+    db.collection("workspaceMessages").find({ participantIds: employee.employeeId }).sort({ createdAt: -1 }).limit(20).toArray(),
+    db.collection("workspaceMeetings").find({ participantIds: employee.employeeId, startsAt: { $gte: new Date() } }).sort({ startsAt: 1 }).limit(5).toArray(),
+    db.collection("workspaceFiles").find({ employeeIds: employee.employeeId }).sort({ uploadedAt: -1 }).limit(20).toArray(),
+    getTodayWorkSummary(db, employee.employeeId),
+  ]);
+  const serializedTasks = tasks.map(serializeWorkspaceTask);
+  return json(res, 200, {
+    success: true,
+    employee,
+    summary: {
+      todayAssignedTasks: serializedTasks.filter(task => task.status === "To Do").length,
+      tasksInProgress: serializedTasks.filter(task => task.status === "In Progress").length,
+      waitingForReview: serializedTasks.filter(task => task.status === "Waiting for Review").length,
+      activeProjects: projects.length,
+      upcomingDeadlines: serializedTasks.filter(task => task.deadline && new Date(task.deadline) >= new Date()).slice(0, 5),
+      unreadMessages: messages.filter(message => !message.readBy?.includes(employee.employeeId)).length,
+      nextMeeting: meetings[0] ? serializeWorkspaceMeeting(meetings[0]) : null,
+      todayWork: workSummary,
+    },
+    tasks: serializedTasks,
+    projects: projects.map(serializeWorkspaceProject),
+    messages: messages.map(serializeWorkspaceMessage),
+    meetings: meetings.map(serializeWorkspaceMeeting),
+    files: files.map(serializeWorkspaceFile),
+  });
+}
+
+async function handleWorkspaceTasks(req, res, env) {
+  const employee = requireAhmedWorkspace(req, res, env);
+  if (!employee) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  if (req.method === "GET") {
+    const tasks = await db.collection("workspaceTasks").find({ assigneeId: employee.employeeId }).sort({ deadline: 1 }).toArray();
+    return json(res, 200, { success: true, tasks: tasks.map(serializeWorkspaceTask) });
+  }
+  res.setHeader("Allow", "GET, OPTIONS");
+  return json(res, 405, { success: false, error: "Method not allowed" });
+}
+
+async function handleWorkspaceTaskDetail(req, res, env, taskId) {
+  const employee = requireAhmedWorkspace(req, res, env);
+  if (!employee) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const task = await findAssignedTask(db, employee.employeeId, taskId);
+  if (!task) return json(res, 404, { success: false, error: "Task not found." });
+  if (req.method === "GET") return json(res, 200, { success: true, task: serializeWorkspaceTask(task) });
+  if (req.method !== "PATCH") {
+    res.setHeader("Allow", "GET, PATCH, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const body = await readJsonBody(req);
+  const action = String(body?.action || "").trim();
+  const now = new Date();
+  const update = { updatedAt: now };
+  if (action === "start") update.status = "In Progress";
+  else if (action === "progress") update.progress = Math.max(0, Math.min(100, Number(body?.progress || 0)));
+  else if (action === "comment") {
+    const message = cleanWorkspaceText(body?.message, 1200);
+    if (!message) return json(res, 400, { success: false, error: "Comment is required." });
+    await db.collection("workspaceTasks").updateOne({ _id: task._id }, { $push: { comments: { authorId: employee.employeeId, authorName: employee.displayName, message, createdAt: now } }, $set: { updatedAt: now } });
+    const updated = await db.collection("workspaceTasks").findOne({ _id: task._id });
+    return json(res, 200, { success: true, task: serializeWorkspaceTask(updated) });
+  } else if (action === "submit") {
+    update.status = "Waiting for Review";
+    update.submittedAt = now;
+    update.githubLink = cleanWorkspaceText(body?.githubLink, 400);
+  } else {
+    return json(res, 400, { success: false, error: "Unsupported task action." });
+  }
+  await db.collection("workspaceTasks").updateOne({ _id: task._id }, { $set: update });
+  const updated = await db.collection("workspaceTasks").findOne({ _id: task._id });
+  return json(res, 200, { success: true, task: serializeWorkspaceTask(updated) });
+}
+
+async function handleWorkspaceCollection(req, res, env, collectionName, filter, serializer, sort = {}) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const employee = requireAhmedWorkspace(req, res, env);
+  if (!employee) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const docs = await db.collection(collectionName).find(filter(employee)).sort(sort).toArray();
+  return json(res, 200, { success: true, items: docs.map(serializer) });
+}
+
+async function handleWorkspaceMessages(req, res, env) {
+  const employee = requireAhmedWorkspace(req, res, env);
+  if (!employee) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  if (req.method === "GET") {
+    const messages = await db.collection("workspaceMessages").find({ participantIds: employee.employeeId }).sort({ createdAt: -1 }).limit(50).toArray();
+    return json(res, 200, { success: true, messages: messages.map(serializeWorkspaceMessage) });
+  }
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "GET, POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const body = await readJsonBody(req);
+  const toId = String(body?.toId || "M").trim().toUpperCase();
+  const message = cleanWorkspaceText(body?.message, 2000);
+  if (!MANAGER_RECIPIENTS.has(toId)) return json(res, 403, { success: false, error: "Messages can only be sent to authorized management." });
+  if (!message) return json(res, 400, { success: false, error: "Message is required." });
+  const doc = { participantIds: [employee.employeeId, toId], fromId: employee.employeeId, toId, body: message, projectId: cleanWorkspaceText(body?.projectId, 120) || null, attachments: [], readBy: [employee.employeeId], createdAt: new Date() };
+  const result = await db.collection("workspaceMessages").insertOne(doc);
+  return json(res, 201, { success: true, message: serializeWorkspaceMessage({ ...doc, _id: result.insertedId }) });
+}
+
+async function handleWorkspaceWorkSession(req, res, env) {
+  const employee = requireAhmedWorkspace(req, res, env);
+  if (!employee) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const activeFilter = { employeeId: employee.employeeId, endedAt: null };
+  if (req.method === "GET") {
+    const active = await db.collection("workspaceWorkSessions").findOne(activeFilter, { sort: { startedAt: -1 } });
+    return json(res, 200, { success: true, session: serializeWorkSession(active), today: await getTodayWorkSummary(db, employee.employeeId) });
+  }
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "GET, POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const body = await readJsonBody(req);
+  const action = String(body?.action || "").trim();
+  const now = new Date();
+  const active = await db.collection("workspaceWorkSessions").findOne(activeFilter, { sort: { startedAt: -1 } });
+  if (action === "start") {
+    if (active) return json(res, 409, { success: false, error: "A work session is already active." });
+    const doc = { employeeId: employee.employeeId, status: "active", currentTaskId: cleanWorkspaceText(body?.currentTaskId, 120), startedAt: now, endedAt: null, activeRanges: [{ start: now, end: null }], breakRanges: [] };
+    const result = await db.collection("workspaceWorkSessions").insertOne(doc);
+    return json(res, 201, { success: true, session: serializeWorkSession({ ...doc, _id: result.insertedId }), today: await getTodayWorkSummary(db, employee.employeeId) });
+  }
+  if (!active) return json(res, 404, { success: false, error: "No active work session found." });
+  if (action === "pause") {
+    if (active.status === "paused") return json(res, 200, { success: true, session: serializeWorkSession(active), today: await getTodayWorkSummary(db, employee.employeeId) });
+    await db.collection("workspaceWorkSessions").updateOne({ _id: active._id }, { $set: { status: "paused", pausedAt: now, "activeRanges.$[range].end": now }, $push: { breakRanges: { start: now, end: null } } }, { arrayFilters: [{ "range.end": null }] });
+  } else if (action === "resume") {
+    if (active.status !== "paused") return json(res, 400, { success: false, error: "The current session is not paused." });
+    await db.collection("workspaceWorkSessions").updateOne({ _id: active._id }, { $set: { status: "active", pausedAt: null, "breakRanges.$[range].end": now }, $push: { activeRanges: { start: now, end: null } } }, { arrayFilters: [{ "range.end": null }] });
+  } else if (action === "end") {
+    const set = { status: "ended", endedAt: now };
+    if (active.status === "paused") set["breakRanges.$[range].end"] = now;
+    else set["activeRanges.$[range].end"] = now;
+    await db.collection("workspaceWorkSessions").updateOne({ _id: active._id }, { $set: set }, { arrayFilters: [{ "range.end": null }] });
+  } else {
+    return json(res, 400, { success: false, error: "Unsupported work session action." });
+  }
+  const updated = await db.collection("workspaceWorkSessions").findOne({ _id: active._id });
+  return json(res, 200, { success: true, session: updated?.endedAt ? null : serializeWorkSession(updated), today: await getTodayWorkSummary(db, employee.employeeId) });
+}
+
+async function handleWorkspaceCheckIns(req, res, env) {
+  const employee = requireAhmedWorkspace(req, res, env);
+  if (!employee) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  if (req.method === "GET") {
+    const checkIns = await db.collection("workspaceCheckIns").find({ employeeId: employee.employeeId }).sort({ createdAt: -1 }).limit(20).toArray();
+    return json(res, 200, { success: true, checkIns: checkIns.map(item => ({ id: String(item._id), completed: item.completed || "", workingOn: item.workingOn || "", blockers: item.blockers || "", createdAt: serializeWorkspaceDate(item.createdAt) })) });
+  }
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "GET, POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const body = await readJsonBody(req);
+  const doc = { employeeId: employee.employeeId, completed: cleanWorkspaceText(body?.completed, 1000), workingOn: cleanWorkspaceText(body?.workingOn, 1000), blockers: cleanWorkspaceText(body?.blockers, 1000), createdAt: new Date() };
+  if (!doc.completed && !doc.workingOn && !doc.blockers) return json(res, 400, { success: false, error: "Please add a progress update before sending." });
+  const result = await db.collection("workspaceCheckIns").insertOne(doc);
+  return json(res, 201, { success: true, checkIn: { id: String(result.insertedId), ...doc, createdAt: serializeWorkspaceDate(doc.createdAt) } });
+}
+
+async function handleWorkspaceProfile(req, res, env) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const employee = requireAhmedWorkspace(req, res, env);
+  if (!employee) return;
+  return json(res, 200, { success: true, profile: { ...employee, preferredLanguage: "English", timezone: "Europe/Stockholm", permissions: ["workspace:read_assigned", "tasks:update_own", "messages:management", "work_sessions:self"] } });
+}
+
+async function routeWorkspaceRequest(req, res, env, route) {
+  const taskMatch = route.match(/^\/api\/workspace\/tasks\/([^/]+)$/);
+  if (route === "/api/workspace/overview") return await handleWorkspaceOverview(req, res, env);
+  if (route === "/api/workspace/tasks") return await handleWorkspaceTasks(req, res, env);
+  if (taskMatch) return await handleWorkspaceTaskDetail(req, res, env, decodeURIComponent(taskMatch[1]));
+  if (route === "/api/workspace/projects") return await handleWorkspaceCollection(req, res, env, "workspaceProjects", employee => ({ assigneeIds: employee.employeeId }), serializeWorkspaceProject, { name: 1 });
+  if (route === "/api/workspace/messages") return await handleWorkspaceMessages(req, res, env);
+  if (route === "/api/workspace/meetings") return await handleWorkspaceCollection(req, res, env, "workspaceMeetings", employee => ({ participantIds: employee.employeeId }), serializeWorkspaceMeeting, { startsAt: 1 });
+  if (route === "/api/workspace/files") return await handleWorkspaceCollection(req, res, env, "workspaceFiles", employee => ({ employeeIds: employee.employeeId }), serializeWorkspaceFile, { uploadedAt: -1 });
+  if (route === "/api/workspace/work-session") return await handleWorkspaceWorkSession(req, res, env);
+  if (route === "/api/workspace/check-ins") return await handleWorkspaceCheckIns(req, res, env);
+  if (route === "/api/workspace/profile") return await handleWorkspaceProfile(req, res, env);
+  return json(res, 404, { success: false, error: "Workspace route not found." });
+}
+
 async function handleFormRoute(req, res, env, route) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
@@ -723,6 +1114,7 @@ export function createHealthServer(env = process.env) {
     const route = url.pathname;
     const isFormRoute = route === "/api/contact" || route === "/api/quote";
     const isAdminRoute = route.startsWith("/api/admin/");
+    const isWorkspaceRoute = route.startsWith("/api/workspace/");
     const isStripeWebhookRoute = route === "/api/payments/stripe/webhook";
     const isEmailVerificationRoute = route === "/api/order-email-verification/send" || route === "/api/order-email-verification/verify";
     const stripeStatusMatch = route.match(/^\/api\/payments\/stripe\/sessions\/([^/]+)$/);
@@ -736,17 +1128,19 @@ export function createHealthServer(env = process.env) {
         ? "POST, OPTIONS"
         : route === "/api/admin/orders" || adminOrderMatch
       ? "GET, PATCH, OPTIONS"
+      : isWorkspaceRoute
+        ? "GET, POST, PATCH, OPTIONS"
       : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || route === "/api/care/stripe/checkout" || route === "/api/care/subscriptions/manage" || route === "/api/care/subscriptions/cancel" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-      if (isAdminRoute) res.setHeader("Access-Control-Allow-Credentials", "true");
+      if (isAdminRoute || isWorkspaceRoute) res.setHeader("Access-Control-Allow-Credentials", "true");
       res.writeHead(204);
       return res.end();
     }
 
-    if (isAdminRoute) res.setHeader("Access-Control-Allow-Credentials", "true");
+    if (isAdminRoute || isWorkspaceRoute) res.setHeader("Access-Control-Allow-Credentials", "true");
 
     try {
       if (isStripeWebhookRoute) return await handleStripeWebhook(req, res, env);
@@ -807,6 +1201,8 @@ export function createHealthServer(env = process.env) {
         if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
         return await handleAdminLogin(req, res, env);
       }
+
+      if (isWorkspaceRoute) return await routeWorkspaceRequest(req, res, env, route);
 
       if (route === "/api/admin/logout") return await handleAdminLogout(req, res, env);
       if (route === "/api/admin/session") {
