@@ -16,6 +16,7 @@ export const WORKSPACE_EMPLOYEES = [
     email: "ahmed@bluemind.com",
     access: "employee",
     title: "iOS Developer",
+    requiresPasswordChange: true,
     passwordHashEnv: "WORKSPACE_AHMED_PASSWORD_HASH",
   },
   {
@@ -24,6 +25,7 @@ export const WORKSPACE_EMPLOYEES = [
     email: "ammar@bluemind.com",
     access: "employee",
     title: "UI/UX Designer",
+    requiresPasswordChange: true,
     passwordHashEnv: "WORKSPACE_AMMAR_PASSWORD_HASH",
   },
   {
@@ -32,6 +34,7 @@ export const WORKSPACE_EMPLOYEES = [
     email: "patrick@bluemind.com",
     access: "employee",
     title: "Android Developer",
+    requiresPasswordChange: true,
     passwordHashEnv: "WORKSPACE_PATRICK_PASSWORD_HASH",
   },
 ];
@@ -56,6 +59,7 @@ export function getWorkspaceIdentity(env = process.env, employeeId) {
     employeeId: employee.employeeId,
     displayName: employee.displayName,
     title: employee.title,
+    requiresPasswordChange: Boolean(employee.requiresPasswordChange),
   };
 }
 

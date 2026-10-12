@@ -77,6 +77,7 @@ test("workspace employee login creates role-specific non-admin sessions that can
         employeeId: "AHMED",
         displayName: "Ahmed",
         title: "iOS Developer",
+        requiresPasswordChange: true,
       },
       {
         email: "ammar@bluemind.com",
@@ -85,6 +86,7 @@ test("workspace employee login creates role-specific non-admin sessions that can
         employeeId: "AMMAR",
         displayName: "Ammar",
         title: "UI/UX Designer",
+        requiresPasswordChange: true,
       },
       {
         email: "patrick@bluemind.com",
@@ -93,6 +95,7 @@ test("workspace employee login creates role-specific non-admin sessions that can
         employeeId: "PATRICK",
         displayName: "Patrick Jane",
         title: "Android Developer",
+        requiresPasswordChange: true,
       },
     ];
 
