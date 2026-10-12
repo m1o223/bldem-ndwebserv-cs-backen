@@ -71,7 +71,7 @@ test("workspace employee login creates role-specific non-admin sessions that can
   await withServer(async base => {
     const employees = [
       {
-        email: "750@gmail.com",
+        email: "ahmed@bluemind.com",
         password: "ahmed-password",
         access: "employee",
         employeeId: "AHMED",
@@ -79,7 +79,7 @@ test("workspace employee login creates role-specific non-admin sessions that can
         title: "iOS Developer",
       },
       {
-        email: "ammar@bluemindwebservice.com",
+        email: "ammar@bluemind.com",
         password: "ammar-password",
         access: "employee",
         employeeId: "AMMAR",
@@ -87,7 +87,7 @@ test("workspace employee login creates role-specific non-admin sessions that can
         title: "UI/UX Designer",
       },
       {
-        email: "patrick@bluemindwebservice.com",
+        email: "patrick@bluemind.com",
         password: "patrick-password",
         access: "employee",
         employeeId: "PATRICK",
