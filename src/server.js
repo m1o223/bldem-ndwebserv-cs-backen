@@ -44,6 +44,17 @@ import {
   handleStripeWebhookEvent,
 } from "./stripePayments.js";
 import { validateContactSubmission, validateQuoteSubmission, ValidationError } from "./validation.js";
+import {
+  ensureMessengerIndexes,
+  getMessengerUnreadTotal,
+  getOrCreatePrivateConversation,
+  listMessengerContacts,
+  listMessengerConversations,
+  listMessengerMessages,
+  markConversationRead,
+  sendMessengerMessage,
+  serializeMessengerConversation,
+} from "./workspaceMessenger.js";
 
 const BODY_LIMIT_BYTES = 32 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -161,6 +172,8 @@ async function ensureCollections(db) {
     "workspaceTasks",
     "workspaceProjects",
     "workspaceMessages",
+    "workspaceConversations",
+    "workspaceMessengerMessages",
     "workspaceMeetings",
     "workspaceFiles",
     "workspaceWorkSessions",
@@ -181,6 +194,7 @@ async function ensureCollections(db) {
   await db.collection("workspaceTasks").createIndex({ assigneeId: 1, status: 1, deadline: 1 });
   await db.collection("workspaceProjects").createIndex({ assigneeIds: 1, status: 1 });
   await db.collection("workspaceMessages").createIndex({ participantIds: 1, createdAt: -1 });
+  await ensureMessengerIndexes(db);
   await db.collection("workspaceMeetings").createIndex({ participantIds: 1, startsAt: 1 });
   await db.collection("workspaceFiles").createIndex({ employeeIds: 1, uploadedAt: -1 });
   await db.collection("workspaceWorkSessions").createIndex({ employeeId: 1, startedAt: -1 });
@@ -385,12 +399,18 @@ async function getTodayWorkSummary(db, employeeId) {
   };
 }
 
-function requireEmployeeWorkspace(req, res, env) {
+function requireWorkspaceUser(req, res, env) {
   const session = isWorkspaceRequest(req, env);
   if (!session) {
     json(res, 401, { success: false, error: "Authentication required." });
     return null;
   }
+  return session;
+}
+
+function requireEmployeeWorkspace(req, res, env) {
+  const session = requireWorkspaceUser(req, res, env);
+  if (!session) return null;
   if (session.access !== "employee") {
     json(res, 403, { success: false, error: "This workspace is only available to employee accounts." });
     return null;
@@ -433,7 +453,7 @@ async function handleWorkspaceOverview(req, res, env) {
       waitingForReview: serializedTasks.filter(task => task.status === "Waiting for Review").length,
       activeProjects: projects.length,
       upcomingDeadlines: serializedTasks.filter(task => task.deadline && new Date(task.deadline) >= new Date()).slice(0, 5),
-      unreadMessages: messages.filter(message => !message.readBy?.includes(employee.employeeId)).length,
+      unreadMessages: await getMessengerUnreadTotal({ db, currentUserId: employee.employeeId }),
       nextMeeting: meetings[0] ? serializeWorkspaceMeeting(meetings[0]) : null,
       todayWork: workSummary,
     },
@@ -507,6 +527,77 @@ async function handleWorkspaceCollection(req, res, env, collectionName, filter, 
   return json(res, 200, { success: true, items: docs.map(serializer) });
 }
 
+async function handleMessengerContacts(req, res, env) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const user = requireWorkspaceUser(req, res, env);
+  if (!user) return;
+  return json(res, 200, { success: true, contacts: await listMessengerContacts({ env, currentUserId: user.employeeId }) });
+}
+
+async function handleMessengerConversations(req, res, env) {
+  const user = requireWorkspaceUser(req, res, env);
+  if (!user) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  if (req.method === "GET") {
+    return json(res, 200, { success: true, conversations: await listMessengerConversations({ db, env, currentUserId: user.employeeId }) });
+  }
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "GET, POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const body = await readJsonBody(req);
+  const conversation = await getOrCreatePrivateConversation({ db, env, currentUserId: user.employeeId, contactId: body?.contactId || body?.participantId });
+  const contacts = await listMessengerContacts({ env, currentUserId: user.employeeId });
+  const usersById = new Map(contacts.map(contact => [contact.employeeId, contact]));
+  return json(res, 201, { success: true, conversation: serializeMessengerConversation(conversation, user.employeeId, usersById, 0) });
+}
+
+async function handleMessengerConversationMessages(req, res, env, conversationId, url) {
+  const user = requireWorkspaceUser(req, res, env);
+  if (!user) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  if (req.method === "GET") {
+    const messages = await listMessengerMessages({
+      db,
+      conversationId,
+      currentUserId: user.employeeId,
+      limit: url.searchParams.get("limit"),
+      before: url.searchParams.get("before"),
+    });
+    return json(res, 200, { success: true, messages });
+  }
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "GET, POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const body = await readJsonBody(req);
+  const result = await sendMessengerMessage({
+    db,
+    conversationId,
+    currentUserId: user.employeeId,
+    body: body?.body || body?.message,
+    clientMessageId: body?.clientMessageId,
+  });
+  return json(res, result.duplicate ? 200 : 201, { success: true, ...result });
+}
+
+async function handleMessengerConversationRead(req, res, env, conversationId) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const user = requireWorkspaceUser(req, res, env);
+  if (!user) return;
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const result = await markConversationRead({ db, conversationId, currentUserId: user.employeeId });
+  return json(res, 200, { success: true, ...result, unreadTotal: await getMessengerUnreadTotal({ db, currentUserId: user.employeeId }) });
+}
 async function handleWorkspaceMessages(req, res, env) {
   const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
@@ -603,10 +694,16 @@ async function handleWorkspaceProfile(req, res, env) {
   return json(res, 200, { success: true, profile: { ...employee, preferredLanguage: "English", timezone: "Europe/Stockholm", permissions: ["workspace:read_assigned", "tasks:update_own", "messages:management", "work_sessions:self"] } });
 }
 
-async function routeWorkspaceRequest(req, res, env, route) {
+async function routeWorkspaceRequest(req, res, env, route, url) {
   const taskMatch = route.match(/^\/api\/workspace\/tasks\/([^/]+)$/);
+  const messengerMessagesMatch = route.match(/^\/api\/workspace\/messenger\/conversations\/([^/]+)\/messages$/);
+  const messengerReadMatch = route.match(/^\/api\/workspace\/messenger\/conversations\/([^/]+)\/read$/);
   if (route === "/api/workspace/overview") return await handleWorkspaceOverview(req, res, env);
   if (route === "/api/workspace/tasks") return await handleWorkspaceTasks(req, res, env);
+  if (route === "/api/workspace/messenger/contacts") return await handleMessengerContacts(req, res, env);
+  if (route === "/api/workspace/messenger/conversations") return await handleMessengerConversations(req, res, env);
+  if (messengerMessagesMatch) return await handleMessengerConversationMessages(req, res, env, decodeURIComponent(messengerMessagesMatch[1]), url);
+  if (messengerReadMatch) return await handleMessengerConversationRead(req, res, env, decodeURIComponent(messengerReadMatch[1]));
   if (taskMatch) return await handleWorkspaceTaskDetail(req, res, env, decodeURIComponent(taskMatch[1]));
   if (route === "/api/workspace/projects") return await handleWorkspaceCollection(req, res, env, "workspaceProjects", employee => ({ assigneeIds: employee.employeeId }), serializeWorkspaceProject, { name: 1 });
   if (route === "/api/workspace/messages") return await handleWorkspaceMessages(req, res, env);
@@ -1202,7 +1299,7 @@ export function createHealthServer(env = process.env) {
         return await handleAdminLogin(req, res, env);
       }
 
-      if (isWorkspaceRoute) return await routeWorkspaceRequest(req, res, env, route);
+      if (isWorkspaceRoute) return await routeWorkspaceRequest(req, res, env, route, url);
 
       if (route === "/api/admin/logout") return await handleAdminLogout(req, res, env);
       if (route === "/api/admin/session") {
