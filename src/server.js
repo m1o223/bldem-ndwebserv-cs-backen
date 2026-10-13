@@ -68,7 +68,7 @@ const WORKSPACE_PROFILE_IMAGE_MAX_BYTES = 300 * 1024;
 const WORKSPACE_PROFILE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const WORKSPACE_PROFILE_PERMISSIONS = ["workspace:read_assigned", "tasks:update_own", "messages:workspace", "work_sessions:self"];
 const DEFAULT_WORKSPACE_NOTIFICATIONS = Object.freeze({ messages: true, meetings: true, security: true });
-const WORKSPACE_LANGUAGES = new Set(["English", "Swedish", "Arabic"]);
+const WORKSPACE_LANGUAGES = new Set(["English", "Arabic"]);
 const KNOWN_PRODUCTION_ORIGINS = [
   "https://bluemindwebservice.com",
   "https://www.bluemindwebservice.com",
@@ -297,13 +297,6 @@ function parseWorkspaceProfileImage(body) {
     fileName: cleanWorkspaceText(body?.fileName, 180) || "profile-photo",
     updatedAt: new Date(),
   };
-}
-
-function validateWorkspacePassword(value) {
-  const password = String(value || "");
-  if (password.length < 12) return "New password must be at least 12 characters.";
-  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) return "New password must include letters and numbers.";
-  return "";
 }
 
 async function verifyWorkspaceProfileCredentials(env, email, password) {
@@ -872,41 +865,7 @@ async function handleWorkspaceProfilePassword(req, res, env) {
   }
   const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
-  if (!env.MONGODB_URI) return json(res, 503, { success: false, error: "Profile storage is not configured." });
-  const body = await readJsonBody(req);
-  const currentPassword = String(body?.currentPassword || "");
-  const newPassword = String(body?.newPassword || "");
-  const validationError = validateWorkspacePassword(newPassword);
-  if (!currentPassword) return json(res, 400, { success: false, error: "Current password is required." });
-  if (validationError) return json(res, 400, { success: false, error: validationError });
-  if (currentPassword === newPassword) return json(res, 400, { success: false, error: "New password must be different from the current password." });
-
-  const db = await getDatabase(env);
-  await ensureCollections(db);
-  const existing = await db.collection("workspaceProfiles").findOne({ employeeId: employee.employeeId });
-  let passwordValid = false;
-
-  if (existing?.passwordHash) {
-    passwordValid = await bcrypt.compare(currentPassword, existing.passwordHash);
-  } else {
-    const employeeConfig = getWorkspaceEmployee(employee.employeeId);
-    const envHash = employeeConfig?.passwordHashEnv ? env[employeeConfig.passwordHashEnv] : "";
-    passwordValid = envHash ? await bcrypt.compare(currentPassword, envHash) : false;
-  }
-
-  if (!passwordValid) return json(res, 401, { success: false, error: "Current password is incorrect." });
-
-  const passwordHash = await bcrypt.hash(newPassword, 12);
-  await db.collection("workspaceProfiles").updateOne(
-    { employeeId: employee.employeeId },
-    {
-      $set: { passwordHash, requiresPasswordChange: false, passwordUpdatedAt: new Date(), updatedAt: new Date() },
-      $setOnInsert: { employeeId: employee.employeeId, createdAt: new Date() },
-    },
-    { upsert: true },
-  );
-  const profile = await db.collection("workspaceProfiles").findOne({ employeeId: employee.employeeId });
-  return json(res, 200, { success: true, profile: serializeWorkspaceProfile({ ...employee, requiresPasswordChange: false }, profile) });
+  return json(res, 403, { success: false, error: "Password changes are managed by BlueMind Workspace administrators." });
 }
 
 async function handleWorkspaceTools(req, res, env) {
