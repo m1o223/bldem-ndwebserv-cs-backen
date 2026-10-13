@@ -4,7 +4,11 @@ const MAX_MESSAGE_LENGTH = 4000;
 const DEFAULT_MESSAGE_LIMIT = 40;
 const MAX_MESSAGE_LIMIT = 80;
 
-export function getWorkspaceDirectory(env = process.env) {
+function profileFor(profileById, employeeId) {
+  return profileById?.get?.(employeeId) || null;
+}
+
+export function getWorkspaceDirectory(env = process.env, profileById = new Map()) {
   return [
     ...ADMIN_EMPLOYEES.map(employee => buildAdminIdentity(env, employee.employeeId)),
     ...WORKSPACE_EMPLOYEES.map(employee => getWorkspaceIdentity(env, employee.employeeId)),
@@ -14,11 +18,12 @@ export function getWorkspaceDirectory(env = process.env) {
     displayName: user.displayName,
     title: user.title,
     initials: initialsFor(user.displayName),
+    profilePhotoUrl: profileFor(profileById, user.employeeId)?.profilePhoto?.dataUrl || "",
   }));
 }
 
-export function getMessengerUser(env = process.env, employeeId) {
-  return getWorkspaceDirectory(env).find(user => user.employeeId === employeeId) || null;
+export function getMessengerUser(env = process.env, employeeId, profileById = new Map()) {
+  return getWorkspaceDirectory(env, profileById).find(user => user.employeeId === employeeId) || null;
 }
 
 export function normalizeParticipantIds(ids) {
@@ -50,6 +55,7 @@ export function serializeMessengerUser(user) {
     title: user.title,
     access: user.access,
     initials: user.initials || initialsFor(user.displayName),
+    profilePhotoUrl: user.profilePhotoUrl || "",
   };
 }
 
@@ -95,9 +101,9 @@ export async function ensureMessengerIndexes(db) {
   await db.collection("workspaceMessengerMessages").createIndex({ conversationId: 1, clientMessageId: 1 }, { unique: true, sparse: true });
 }
 
-export async function getOrCreatePrivateConversation({ db, env = process.env, currentUserId, contactId, now = new Date() }) {
-  const currentUser = getMessengerUser(env, currentUserId);
-  const contact = getMessengerUser(env, contactId);
+export async function getOrCreatePrivateConversation({ db, env = process.env, currentUserId, contactId, now = new Date(), profileById = new Map() }) {
+  const currentUser = getMessengerUser(env, currentUserId, profileById);
+  const contact = getMessengerUser(env, contactId, profileById);
   if (!currentUser) throw statusError("Authentication required.", 401);
   if (!contact) throw statusError("Contact not found.", 404);
   if (currentUser.employeeId === contact.employeeId) throw statusError("Choose another BlueMind Workspace user.", 400);
@@ -121,14 +127,14 @@ export async function getOrCreatePrivateConversation({ db, env = process.env, cu
   return await db.collection("workspaceConversations").findOne({ conversationId });
 }
 
-export async function listMessengerContacts({ env = process.env, currentUserId }) {
-  const users = getWorkspaceDirectory(env);
+export async function listMessengerContacts({ env = process.env, currentUserId, profileById = new Map() }) {
+  const users = getWorkspaceDirectory(env, profileById);
   if (!users.some(user => user.employeeId === currentUserId)) throw statusError("Authentication required.", 401);
   return users.filter(user => user.employeeId !== currentUserId).map(serializeMessengerUser);
 }
 
-export async function listMessengerConversations({ db, env = process.env, currentUserId }) {
-  const usersById = new Map(getWorkspaceDirectory(env).map(user => [user.employeeId, user]));
+export async function listMessengerConversations({ db, env = process.env, currentUserId, profileById = new Map() }) {
+  const usersById = new Map(getWorkspaceDirectory(env, profileById).map(user => [user.employeeId, user]));
   if (!usersById.has(currentUserId)) throw statusError("Authentication required.", 401);
   const conversations = await db.collection("workspaceConversations")
     .find({ participantIds: currentUserId })

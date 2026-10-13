@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
+import bcrypt from "bcryptjs";
 import {
   buildAdminIdentity,
   buildAdminLogoutCookie,
@@ -10,6 +11,8 @@ import {
   verifyAdminCredentials,
   ADMIN_EMPLOYEES,
   getAdminEmployee,
+  getWorkspaceEmployee,
+  WORKSPACE_EMPLOYEES,
 } from "./adminAuth.js";
 import { getDatabase } from "./database.js";
 import { sendFormNotification, sendOrderReadyNotification } from "./email.js";
@@ -57,10 +60,15 @@ import {
 } from "./workspaceMessenger.js";
 import { listWorkspaceToolsForEmployee } from "./workspaceTools.js";
 
-const BODY_LIMIT_BYTES = 32 * 1024;
+const BODY_LIMIT_BYTES = 768 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 20;
 const PRESENCE_TIMEOUT_MS = 120_000;
+const WORKSPACE_PROFILE_IMAGE_MAX_BYTES = 300 * 1024;
+const WORKSPACE_PROFILE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const WORKSPACE_PROFILE_PERMISSIONS = ["workspace:read_assigned", "tasks:update_own", "messages:workspace", "work_sessions:self"];
+const DEFAULT_WORKSPACE_NOTIFICATIONS = Object.freeze({ messages: true, meetings: true, security: true });
+const WORKSPACE_LANGUAGES = new Set(["English", "Swedish", "Arabic"]);
 const KNOWN_PRODUCTION_ORIGINS = [
   "https://bluemindwebservice.com",
   "https://www.bluemindwebservice.com",
@@ -180,6 +188,7 @@ async function ensureCollections(db) {
     "workspaceFiles",
     "workspaceWorkSessions",
     "workspaceCheckIns",
+    "workspaceProfiles",
   ]) {
     if (!existing.has(name)) await db.createCollection(name);
   }
@@ -201,6 +210,7 @@ async function ensureCollections(db) {
   await db.collection("workspaceFiles").createIndex({ employeeIds: 1, uploadedAt: -1 });
   await db.collection("workspaceWorkSessions").createIndex({ employeeId: 1, startedAt: -1 });
   await db.collection("workspaceCheckIns").createIndex({ employeeId: 1, createdAt: -1 });
+  await db.collection("workspaceProfiles").createIndex({ employeeId: 1 }, { unique: true });
 }
 
 
@@ -213,6 +223,103 @@ function serializeWorkspaceUser(env, sessionOrUser) {
   if (!sessionOrUser) return null;
   if (sessionOrUser.access === "admin") return buildAdminIdentity(env, sessionOrUser.employeeId);
   return sessionOrUser;
+}
+
+function serializeWorkspaceProfile(employee, profileDoc = null) {
+  const notifications = {
+    ...DEFAULT_WORKSPACE_NOTIFICATIONS,
+    ...(profileDoc?.notifications && typeof profileDoc.notifications === "object" ? profileDoc.notifications : {}),
+    security: true,
+  };
+
+  return {
+    access: employee.access || "employee",
+    employeeId: employee.employeeId,
+    displayName: employee.displayName,
+    title: employee.title,
+    email: employee.email,
+    accountStatus: "Active",
+    preferredLanguage: WORKSPACE_LANGUAGES.has(profileDoc?.preferredLanguage) ? profileDoc.preferredLanguage : "English",
+    timezone: "Europe/Stockholm",
+    notifications,
+    profilePhotoUrl: profileDoc?.profilePhoto?.dataUrl || "",
+    permissions: WORKSPACE_PROFILE_PERMISSIONS,
+    requiresPasswordChange: Boolean(employee.requiresPasswordChange && !profileDoc?.passwordHash),
+  };
+}
+
+async function getWorkspaceProfileMap(db) {
+  const docs = await db.collection("workspaceProfiles").find({}, { projection: { employeeId: 1, profilePhoto: 1 } }).toArray();
+  return new Map(docs.map(doc => [doc.employeeId, doc]));
+}
+
+function normalizeWorkspaceLanguage(value) {
+  const language = String(value || "").trim();
+  return WORKSPACE_LANGUAGES.has(language) ? language : "English";
+}
+
+function normalizeNotificationPreferences(input, existing = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  return {
+    messages: typeof source.messages === "boolean" ? source.messages : existing.messages ?? DEFAULT_WORKSPACE_NOTIFICATIONS.messages,
+    meetings: typeof source.meetings === "boolean" ? source.meetings : existing.meetings ?? DEFAULT_WORKSPACE_NOTIFICATIONS.meetings,
+    security: true,
+  };
+}
+
+function parseWorkspaceProfileImage(body) {
+  const rawImage = String(body?.imageData || "");
+  let mimeType = String(body?.mimeType || "").trim().toLowerCase();
+  let base64 = rawImage;
+  const dataUrlMatch = rawImage.match(/^data:([^;,]+);base64,(.+)$/);
+  if (dataUrlMatch) {
+    mimeType = dataUrlMatch[1].toLowerCase();
+    base64 = dataUrlMatch[2];
+  }
+
+  if (!WORKSPACE_PROFILE_IMAGE_TYPES.has(mimeType)) {
+    throw Object.assign(new Error("Use a JPG, PNG, or WebP image."), { statusCode: 400 });
+  }
+  if (!/^[a-z0-9+/=\s]+$/i.test(base64)) {
+    throw Object.assign(new Error("Invalid image data."), { statusCode: 400 });
+  }
+
+  const buffer = Buffer.from(base64.replace(/\s/g, ""), "base64");
+  if (!buffer.length) throw Object.assign(new Error("Image is required."), { statusCode: 400 });
+  if (buffer.length > WORKSPACE_PROFILE_IMAGE_MAX_BYTES) {
+    throw Object.assign(new Error("Profile photo must be 300 KB or smaller."), { statusCode: 413 });
+  }
+
+  return {
+    dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`,
+    mimeType,
+    size: buffer.length,
+    fileName: cleanWorkspaceText(body?.fileName, 180) || "profile-photo",
+    updatedAt: new Date(),
+  };
+}
+
+function validateWorkspacePassword(value) {
+  const password = String(value || "");
+  if (password.length < 12) return "New password must be at least 12 characters.";
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) return "New password must include letters and numbers.";
+  return "";
+}
+
+async function verifyWorkspaceProfileCredentials(env, email, password) {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const employeeConfig = WORKSPACE_EMPLOYEES.find(employee => employee.email.toLowerCase() === normalizedEmail);
+  if (!employeeConfig || !env.MONGODB_URI) return { handled: false, user: null };
+
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const profile = await db.collection("workspaceProfiles").findOne({ employeeId: employeeConfig.employeeId });
+  if (!profile?.passwordHash) return { handled: false, user: null };
+
+  const valid = await bcrypt.compare(String(password || ""), profile.passwordHash);
+  if (!valid) return { handled: true, user: null };
+  const employee = { ...employeeConfig, access: "employee", requiresPasswordChange: false };
+  return { handled: true, user: serializeWorkspaceProfile(employee, profile) };
 }
 
 function serializePresence(doc, now = new Date()) {
@@ -536,7 +643,13 @@ async function handleMessengerContacts(req, res, env) {
   }
   const user = requireWorkspaceUser(req, res, env);
   if (!user) return;
-  return json(res, 200, { success: true, contacts: await listMessengerContacts({ env, currentUserId: user.employeeId }) });
+  if (!env.MONGODB_URI) {
+    return json(res, 200, { success: true, contacts: await listMessengerContacts({ env, currentUserId: user.employeeId }) });
+  }
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const profileById = await getWorkspaceProfileMap(db);
+  return json(res, 200, { success: true, contacts: await listMessengerContacts({ env, currentUserId: user.employeeId, profileById }) });
 }
 
 async function handleMessengerConversations(req, res, env) {
@@ -544,16 +657,17 @@ async function handleMessengerConversations(req, res, env) {
   if (!user) return;
   const db = await getDatabase(env);
   await ensureCollections(db);
+  const profileById = await getWorkspaceProfileMap(db);
   if (req.method === "GET") {
-    return json(res, 200, { success: true, conversations: await listMessengerConversations({ db, env, currentUserId: user.employeeId }) });
+    return json(res, 200, { success: true, conversations: await listMessengerConversations({ db, env, currentUserId: user.employeeId, profileById }) });
   }
   if (req.method !== "POST") {
     res.setHeader("Allow", "GET, POST, OPTIONS");
     return json(res, 405, { success: false, error: "Method not allowed" });
   }
   const body = await readJsonBody(req);
-  const conversation = await getOrCreatePrivateConversation({ db, env, currentUserId: user.employeeId, contactId: body?.contactId || body?.participantId });
-  const contacts = await listMessengerContacts({ env, currentUserId: user.employeeId });
+  const conversation = await getOrCreatePrivateConversation({ db, env, currentUserId: user.employeeId, contactId: body?.contactId || body?.participantId, profileById });
+  const contacts = await listMessengerContacts({ env, currentUserId: user.employeeId, profileById });
   const usersById = new Map(contacts.map(contact => [contact.employeeId, contact]));
   return json(res, 201, { success: true, conversation: serializeMessengerConversation(conversation, user.employeeId, usersById, 0) });
 }
@@ -687,13 +801,112 @@ async function handleWorkspaceCheckIns(req, res, env) {
 }
 
 async function handleWorkspaceProfile(req, res, env) {
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET, OPTIONS");
+  if (!["GET", "PATCH"].includes(req.method)) {
+    res.setHeader("Allow", "GET, PATCH, OPTIONS");
     return json(res, 405, { success: false, error: "Method not allowed" });
   }
   const employee = requireEmployeeWorkspace(req, res, env);
   if (!employee) return;
-  return json(res, 200, { success: true, profile: { ...employee, preferredLanguage: "English", timezone: "Europe/Stockholm", permissions: ["workspace:read_assigned", "tasks:update_own", "messages:management", "work_sessions:self"] } });
+  if (!env.MONGODB_URI) {
+    if (req.method === "GET") return json(res, 200, { success: true, profile: serializeWorkspaceProfile(employee) });
+    return json(res, 503, { success: false, error: "Profile storage is not configured." });
+  }
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const existing = await db.collection("workspaceProfiles").findOne({ employeeId: employee.employeeId });
+
+  if (req.method === "GET") {
+    return json(res, 200, { success: true, profile: serializeWorkspaceProfile(employee, existing) });
+  }
+
+  const body = await readJsonBody(req);
+  const update = {
+    preferredLanguage: normalizeWorkspaceLanguage(body?.preferredLanguage),
+    notifications: normalizeNotificationPreferences(body?.notifications, existing?.notifications),
+    updatedAt: new Date(),
+  };
+  await db.collection("workspaceProfiles").updateOne(
+    { employeeId: employee.employeeId },
+    { $set: update, $setOnInsert: { employeeId: employee.employeeId, createdAt: new Date() } },
+    { upsert: true },
+  );
+  const profile = await db.collection("workspaceProfiles").findOne({ employeeId: employee.employeeId });
+  return json(res, 200, { success: true, profile: serializeWorkspaceProfile(employee, profile) });
+}
+
+async function handleWorkspaceProfilePhoto(req, res, env) {
+  if (!["POST", "DELETE"].includes(req.method)) {
+    res.setHeader("Allow", "POST, DELETE, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const employee = requireEmployeeWorkspace(req, res, env);
+  if (!employee) return;
+  if (!env.MONGODB_URI) return json(res, 503, { success: false, error: "Profile storage is not configured." });
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+
+  if (req.method === "DELETE") {
+    await db.collection("workspaceProfiles").updateOne(
+      { employeeId: employee.employeeId },
+      { $unset: { profilePhoto: "" }, $set: { updatedAt: new Date() }, $setOnInsert: { employeeId: employee.employeeId, createdAt: new Date() } },
+      { upsert: true },
+    );
+  } else {
+    const body = await readJsonBody(req);
+    const profilePhoto = parseWorkspaceProfileImage(body);
+    await db.collection("workspaceProfiles").updateOne(
+      { employeeId: employee.employeeId },
+      { $set: { profilePhoto, updatedAt: new Date() }, $setOnInsert: { employeeId: employee.employeeId, createdAt: new Date() } },
+      { upsert: true },
+    );
+  }
+
+  const profile = await db.collection("workspaceProfiles").findOne({ employeeId: employee.employeeId });
+  return json(res, 200, { success: true, profile: serializeWorkspaceProfile(employee, profile) });
+}
+
+async function handleWorkspaceProfilePassword(req, res, env) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const employee = requireEmployeeWorkspace(req, res, env);
+  if (!employee) return;
+  if (!env.MONGODB_URI) return json(res, 503, { success: false, error: "Profile storage is not configured." });
+  const body = await readJsonBody(req);
+  const currentPassword = String(body?.currentPassword || "");
+  const newPassword = String(body?.newPassword || "");
+  const validationError = validateWorkspacePassword(newPassword);
+  if (!currentPassword) return json(res, 400, { success: false, error: "Current password is required." });
+  if (validationError) return json(res, 400, { success: false, error: validationError });
+  if (currentPassword === newPassword) return json(res, 400, { success: false, error: "New password must be different from the current password." });
+
+  const db = await getDatabase(env);
+  await ensureCollections(db);
+  const existing = await db.collection("workspaceProfiles").findOne({ employeeId: employee.employeeId });
+  let passwordValid = false;
+
+  if (existing?.passwordHash) {
+    passwordValid = await bcrypt.compare(currentPassword, existing.passwordHash);
+  } else {
+    const employeeConfig = getWorkspaceEmployee(employee.employeeId);
+    const envHash = employeeConfig?.passwordHashEnv ? env[employeeConfig.passwordHashEnv] : "";
+    passwordValid = envHash ? await bcrypt.compare(currentPassword, envHash) : false;
+  }
+
+  if (!passwordValid) return json(res, 401, { success: false, error: "Current password is incorrect." });
+
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+  await db.collection("workspaceProfiles").updateOne(
+    { employeeId: employee.employeeId },
+    {
+      $set: { passwordHash, requiresPasswordChange: false, passwordUpdatedAt: new Date(), updatedAt: new Date() },
+      $setOnInsert: { employeeId: employee.employeeId, createdAt: new Date() },
+    },
+    { upsert: true },
+  );
+  const profile = await db.collection("workspaceProfiles").findOne({ employeeId: employee.employeeId });
+  return json(res, 200, { success: true, profile: serializeWorkspaceProfile({ ...employee, requiresPasswordChange: false }, profile) });
 }
 
 async function handleWorkspaceTools(req, res, env) {
@@ -728,6 +941,8 @@ async function routeWorkspaceRequest(req, res, env, route, url) {
   if (route === "/api/workspace/work-session") return await handleWorkspaceWorkSession(req, res, env);
   if (route === "/api/workspace/check-ins") return await handleWorkspaceCheckIns(req, res, env);
   if (route === "/api/workspace/profile") return await handleWorkspaceProfile(req, res, env);
+  if (route === "/api/workspace/profile/photo") return await handleWorkspaceProfilePhoto(req, res, env);
+  if (route === "/api/workspace/profile/password") return await handleWorkspaceProfilePassword(req, res, env);
   if (route === "/api/workspace/tools" || route === "/api/employee/tools") return await handleWorkspaceTools(req, res, env);
   return json(res, 404, { success: false, error: "Workspace route not found." });
 }
@@ -922,7 +1137,10 @@ async function handleAdminLogin(req, res, env) {
   }
 
   const body = await readJsonBody(req);
-  const user = await verifyAdminCredentials(env, body?.email, body?.password);
+  const workspaceProfileCredentials = await verifyWorkspaceProfileCredentials(env, body?.email, body?.password);
+  const user = workspaceProfileCredentials.handled
+    ? workspaceProfileCredentials.user
+    : await verifyAdminCredentials(env, body?.email, body?.password);
   if (!user) return json(res, 401, { success: false, error: "Invalid email or password." });
 
   const token = createAdminSession(env, user);
