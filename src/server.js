@@ -55,6 +55,7 @@ import {
   sendMessengerMessage,
   serializeMessengerConversation,
 } from "./workspaceMessenger.js";
+import { listWorkspaceToolsForEmployee } from "./workspaceTools.js";
 
 const BODY_LIMIT_BYTES = 32 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -64,6 +65,7 @@ const KNOWN_PRODUCTION_ORIGINS = [
   "https://bluemindwebservice.com",
   "https://www.bluemindwebservice.com",
   "https://bluemind-web-service.vercel.app",
+  "https://admin-bluemindwebservice.vercel.app",
   "https://admin-bluemindwebservise.vercel.app",
 ];
 
@@ -694,6 +696,20 @@ async function handleWorkspaceProfile(req, res, env) {
   return json(res, 200, { success: true, profile: { ...employee, preferredLanguage: "English", timezone: "Europe/Stockholm", permissions: ["workspace:read_assigned", "tasks:update_own", "messages:management", "work_sessions:self"] } });
 }
 
+async function handleWorkspaceTools(req, res, env) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return json(res, 405, { success: false, error: "Method not allowed" });
+  }
+  const employee = requireEmployeeWorkspace(req, res, env);
+  if (!employee) return;
+  return json(res, 200, {
+    success: true,
+    role: employee.title,
+    tools: listWorkspaceToolsForEmployee(employee),
+  });
+}
+
 async function routeWorkspaceRequest(req, res, env, route, url) {
   const taskMatch = route.match(/^\/api\/workspace\/tasks\/([^/]+)$/);
   const messengerMessagesMatch = route.match(/^\/api\/workspace\/messenger\/conversations\/([^/]+)\/messages$/);
@@ -712,6 +728,7 @@ async function routeWorkspaceRequest(req, res, env, route, url) {
   if (route === "/api/workspace/work-session") return await handleWorkspaceWorkSession(req, res, env);
   if (route === "/api/workspace/check-ins") return await handleWorkspaceCheckIns(req, res, env);
   if (route === "/api/workspace/profile") return await handleWorkspaceProfile(req, res, env);
+  if (route === "/api/workspace/tools" || route === "/api/employee/tools") return await handleWorkspaceTools(req, res, env);
   return json(res, 404, { success: false, error: "Workspace route not found." });
 }
 
@@ -1211,7 +1228,7 @@ export function createHealthServer(env = process.env) {
     const route = url.pathname;
     const isFormRoute = route === "/api/contact" || route === "/api/quote";
     const isAdminRoute = route.startsWith("/api/admin/");
-    const isWorkspaceRoute = route.startsWith("/api/workspace/");
+    const isWorkspaceRoute = route.startsWith("/api/workspace/") || route === "/api/employee/tools";
     const isStripeWebhookRoute = route === "/api/payments/stripe/webhook";
     const isEmailVerificationRoute = route === "/api/order-email-verification/send" || route === "/api/order-email-verification/verify";
     const stripeStatusMatch = route.match(/^\/api\/payments\/stripe\/sessions\/([^/]+)$/);
