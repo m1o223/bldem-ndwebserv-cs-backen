@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
+import bcrypt from "bcryptjs";
 import { createHealthServer } from "../src/server.js";
 import { allowedAiOrigins } from "../src/ai/config.js";
 
 const origin = "https://approved-preview.example.com";
-const env = { NODE_ENV: "test", ALLOWED_ORIGINS: "https://existing.example.com", AI_ALLOWED_ORIGINS: origin, AI_ENABLED: "true", OPENAI_API_KEY: "test-not-a-real-key" };
+const password = "local-fixture-only";
+const env = { NODE_ENV: "test", ALLOWED_ORIGINS: "https://existing.example.com", AI_ALLOWED_ORIGINS: origin, AI_ENABLED: "false", AI_OWNER_TEST_ENABLED: "true", OPENAI_API_KEY: "test-not-a-real-key", ADMIN_EMAIL: "owner@example.test", ADMIN_M_PASSWORD_HASH: bcrypt.hashSync(password, 4), ADMIN_R_PASSWORD_HASH: bcrypt.hashSync("other-fixture", 4) };
+const tokens = new Map();
 const messages = [{ role: "user", content: "Hello" }];
 const provider = async () => (async function* () {
   yield { type: "delta", text: "Test fixture reply" };
@@ -14,11 +17,16 @@ const provider = async () => (async function* () {
 async function withServer(run, overrides = {}, ai = {}) {
   const server = createHealthServer({ ...env, ...overrides }, { ai: { provider, log: () => {}, ...ai } });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  try { await run(`http://127.0.0.1:${server.address().port}`); }
-  finally { await new Promise(resolve => server.close(resolve)); }
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const login = await fetch(`${base}/api/ai/session`, { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify({ email: env.ADMIN_EMAIL, password }) });
+    if (login.ok) tokens.set(base, (await login.json()).token);
+    await run(base);
+  }
+  finally { tokens.delete(base); await new Promise(resolve => server.close(resolve)); }
 }
 const post = (base, body = { messages }, extra = {}) => fetch(`${base}/api/ai/chat`, {
-  method: "POST", headers: { Origin: origin, "Content-Type": "application/json", ...extra }, body: JSON.stringify(body),
+  method: "POST", headers: { Origin: origin, "Content-Type": "application/json", Authorization: `Bearer ${tokens.get(base)}`, ...extra }, body: JSON.stringify(body),
 });
 
 test("malformed request URLs cannot crash AI route dispatch", async () => {
@@ -55,13 +63,13 @@ test("AI-only CORS accepts exact origins and does not grant access to existing A
     assert.equal((await fetch(`${base}/api/ai/chat`, { method: "POST" })).status, 403);
     const wrongMethod = await fetch(`${base}/api/ai/chat`, { method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "DELETE" } });
     assert.equal(wrongMethod.status, 403);
-    const extraHeader = await fetch(`${base}/api/ai/chat`, { method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization" } });
+    const extraHeader = await fetch(`${base}/api/ai/chat`, { method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "x-owner-id" } });
     assert.equal(extraHeader.status, 403);
   });
 });
 
 test("bad AI configuration fails closed without breaking the existing health route", async () => {
-  for (const changes of [{ AI_ENABLED: "false" }, { OPENAI_API_KEY: "" }, { AI_ALLOWED_ORIGINS: "*" }]) {
+  for (const changes of [{ AI_OWNER_TEST_ENABLED: "false" }, { OPENAI_API_KEY: "" }, { AI_ALLOWED_ORIGINS: "*" }]) {
     await withServer(async base => {
       assert.equal((await fetch(`${base}/api/health`)).status, 200);
       const response = await post(base);
@@ -142,7 +150,7 @@ test("browser disconnect stops generation and releases the slot", async () => {
   let aborted = false;
   await withServer(async base => {
     const controller = new AbortController();
-    const response = await fetch(`${base}/api/ai/chat`, { method: "POST", signal: controller.signal, headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify({ messages }) });
+    const response = await fetch(`${base}/api/ai/chat`, { method: "POST", signal: controller.signal, headers: { Origin: origin, "Content-Type": "application/json", Authorization: `Bearer ${tokens.get(base)}` }, body: JSON.stringify({ messages }) });
     await response.body.getReader().read();
     controller.abort();
     for (let i = 0; i < 50 && !aborted; i++) await new Promise(resolve => setTimeout(resolve, 10));
