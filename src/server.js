@@ -59,6 +59,7 @@ import {
   serializeMessengerConversation,
 } from "./workspaceMessenger.js";
 import { listWorkspaceToolsForEmployee } from "./workspaceTools.js";
+import { createAiRoute } from "./ai/http.js";
 
 const BODY_LIMIT_BYTES = 768 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -1386,9 +1387,10 @@ async function requestOrderClarification(req, res, env, orderNumber) {
   return json(res, 200, { success: true, order: serializeOrder(updated), notification });
 }
 
-export function createHealthServer(env = process.env) {
+export function createHealthServer(env = process.env, { ai = {} } = {}) {
   const allowed = parseAllowedOrigins(env);
   const checkRateLimit = createRateLimiter();
+  const handleAi = createAiRoute(env, ai);
 
   const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -1397,11 +1399,16 @@ export function createHealthServer(env = process.env) {
     res.setHeader("Vary", "Origin");
     res.setHeader("Referrer-Policy", "no-referrer");
 
+    let url;
+    try { url = new URL(req.url || "/", "http://localhost"); }
+    catch { return json(res, 400, { success: false, error: "Invalid request URL" }); }
+    // AI has its own allowlist; it never expands access to orders or admin routes.
+    if (url.pathname === "/api/ai/chat") return handleAi(req, res);
+
     const origin = req.headers.origin;
     if (origin && !allowed.has(origin)) return json(res, 403, { success: false, error: "Origin not allowed" });
     if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
 
-    const url = new URL(req.url || "/", "http://localhost");
     const route = url.pathname;
     const isFormRoute = route === "/api/contact" || route === "/api/quote";
     const isAdminRoute = route.startsWith("/api/admin/");

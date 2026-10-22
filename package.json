@@ -16,6 +16,7 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "mongodb": "^6.21.0",
+    "openai": "7.41.0",
     "resend": "^6.32.0",
     "stripe": "^23.0.0"
   }
