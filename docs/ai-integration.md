@@ -7,6 +7,11 @@ routes retain their original behavior. No AI messages are stored in MongoDB.
 
 ## Configuration and activation
 
+For the currently approved preparation-only phase, follow
+[the staging checklist](ai-staging-preparation.md). Do not deploy the feature
+branch to the existing public service or use its production URL for staging.
+The activation instructions below require separate release approval.
+
 Use the existing Render service `bluemind-web-service-backend`, not the separate
 BlueMind AI mobile backend. Do not create another service.
 
