@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { AI_LIMITS } from "./contract.js";
 import { allowedAiOrigins } from "./config.js";
-import { createOwnerHandler } from "./owner.js";
+import { createChatHandler } from "./server.js";
 
 function readIncomingBody(req, signal, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -31,7 +31,7 @@ function readIncomingBody(req, signal, timeoutMs) {
 
 // This adapter is the only integration point with the existing Node HTTP server.
 export function createAiRoute(env, options = {}) {
-  const handle = createOwnerHandler(env, options);
+  const handle = createChatHandler({ ...options, env });
   const allowed = allowedAiOrigins(env);
   let receiving = 0;
   return async (req, res) => {
@@ -40,8 +40,7 @@ export function createAiRoute(env, options = {}) {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Vary", "Origin");
     const path = new URL(req.url, "http://backend.internal").pathname;
-    const sessionRoute = path === "/api/ai/session";
-    const methods = sessionRoute ? ["POST", "GET", "DELETE"] : ["POST"];
+    const methods = ["POST"];
     const reject = (status, code) => {
       if (res.destroyed) return;
       res.statusCode = status;
@@ -55,9 +54,9 @@ export function createAiRoute(env, options = {}) {
     res.setHeader("Access-Control-Expose-Headers", "Retry-After");
     if (req.method === "OPTIONS") {
       const headers = String(req.headers["access-control-request-headers"] || "").toLowerCase().split(",").map(value => value.trim()).filter(Boolean);
-      if (!methods.includes(req.headers["access-control-request-method"]) || headers.some(header => !["content-type", "authorization"].includes(header))) return reject(403, "invalid");
+      if (!methods.includes(req.headers["access-control-request-method"]) || headers.some(header => header !== "content-type")) return reject(403, "invalid");
       res.setHeader("Access-Control-Allow-Methods", [...methods, "OPTIONS"].join(", "));
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
       res.statusCode = 204;
       return res.end();
     }
@@ -83,7 +82,7 @@ export function createAiRoute(env, options = {}) {
         return reject(error.status === 413 ? 413 : error.status === 408 ? 408 : 400, "invalid");
       }
       const request = new Request(`http://backend.internal${path}`, {
-        method: req.method, headers: { Origin: origin, "Content-Type": "application/json", Authorization: req.headers.authorization || "" }, body, signal: controller.signal,
+        method: req.method, headers: { Origin: origin, "Content-Type": "application/json" }, body, signal: controller.signal,
       });
       const response = await handle(request, req.socket.remoteAddress || "unknown");
       if (res.destroyed) { await response.body?.cancel(); return; }

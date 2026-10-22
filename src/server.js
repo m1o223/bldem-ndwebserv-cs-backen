@@ -1403,7 +1403,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
     try { url = new URL(req.url || "/", "http://localhost"); }
     catch { return json(res, 400, { success: false, error: "Invalid request URL" }); }
     // AI has its own allowlist; it never expands access to orders or admin routes.
-    if (["/api/ai/chat", "/api/ai/session"].includes(url.pathname)) return handleAi(req, res);
+    if (url.pathname === "/api/ai/chat") return handleAi(req, res);
 
     const origin = req.headers.origin;
     if (origin && !allowed.has(origin)) return json(res, 403, { success: false, error: "Origin not allowed" });
