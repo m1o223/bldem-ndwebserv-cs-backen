@@ -26,7 +26,8 @@ export function boundedContext(turns) {
     return result;
 }
 export function validateTurns(body) {
-    if (!body || typeof body !== "object" || Object.keys(body).some((key)=>key !== "messages")) return null;
+    if (!body || typeof body !== "object" || Object.keys(body).some((key)=>!["messages", "responseFormat"].includes(key))) return null;
+    if (Object.hasOwn(body, "responseFormat") && body.responseFormat !== "message-card-v1") return null;
     const messages = body.messages;
     if (!Array.isArray(messages) || !messages.length || messages.length > AI_LIMITS.turns) return null;
     let chars = 0;

@@ -3,6 +3,7 @@ import { listActiveWebsitePackages } from "../pricing.js";
 import { listCarePlans } from "../carePricing.js";
 import { carePolicy, websitePolicy } from "./company-policy.js";
 import { AI_LIMITS } from "./contract.js";
+import { messageCardInstructions, messageCardTool, validateMessageCard } from "./message-card.js";
 export const instructions = `You are BlueMind AI, an intelligent assistant developed by BlueMind
 for its product BlueMind Web Service. When asked who you are, who developed you, or
 which company you belong to, introduce yourself naturally in the user's language.
@@ -57,10 +58,11 @@ export function openAIProvider(apiKey, model, fetcher) {
             fetch: fetcher
         } : {}
     });
-    return async (messages, signal)=>{
+    return async (messages, signal, { messageCards = false } = {})=>{
         const stream = await client.responses.create({
             model,
-            instructions,
+            instructions: instructions + (messageCards ? messageCardInstructions : ""),
+            ...(messageCards ? { tools: [messageCardTool], parallel_tool_calls: false } : {}),
             input: messages,
             stream: true,
             store: false,
@@ -69,13 +71,21 @@ export function openAIProvider(apiKey, model, fetcher) {
             signal
         });
         return async function*() {
+            let card;
             for await (const event of stream){
                 if (event.type === "response.output_text.delta" || event.type === "response.refusal.delta") {
                     yield {
                         type: "delta",
                         text: event.delta
                     };
+                } else if (event.type === "response.output_item.done" && event.item.type === "function_call") {
+                    if (!messageCards || card || event.item.name !== messageCardTool.name
+                        || typeof event.item.arguments !== "string" || event.item.arguments.length > AI_LIMITS.assistantChars * 8) throw new Error("Invalid card response");
+                    card = validateMessageCard(JSON.parse(event.item.arguments));
+                    if (!card) throw new Error("Invalid card response");
                 } else if (event.type === "response.completed") {
+                    // Publish only a validated, successfully completed draft, never partial JSON.
+                    if (card) yield { type: "message_card", card };
                     yield {
                         type: "done",
                         inputTokens: event.response.usage?.input_tokens ?? 0,

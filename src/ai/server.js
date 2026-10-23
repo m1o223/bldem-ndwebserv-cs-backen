@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AI_LIMITS, validateTurns } from "./contract.js";
 import { openAIProvider } from "./provider.js";
 import { allowedAiOrigins } from "./config.js";
+import { MESSAGE_CARD_FORMAT, validateMessageCard } from "./message-card.js";
 export function configurationIssue(env = process.env) {
     if (env.AI_ENABLED !== "true") return "feature_disabled";
     if (!env.OPENAI_API_KEY?.trim()) return "missing_api_key";
@@ -157,8 +158,11 @@ export function createChatHandler(options = {}) {
         const release = acquire(clientId);
         if (!release) return jsonError("rate", 429);
         let messages;
+        let messageCards = false;
         try {
-            messages = validateTurns(await readBody(request));
+            const body = await readBody(request);
+            messages = validateTurns(body);
+            messageCards = body?.responseFormat === MESSAGE_CARD_FORMAT;
         } catch  {
             release();
             return jsonError("invalid", 400);
@@ -199,7 +203,7 @@ export function createChatHandler(options = {}) {
         };
         try {
             const provider = options.provider ?? openAIProvider(env.OPENAI_API_KEY.trim(), env.OPENAI_MODEL?.trim() || "gpt-5.4-mini");
-            const events = await provider(messages, controller.signal);
+            const events = await provider(messages, controller.signal, { messageCards });
             const encoder = new TextEncoder();
             let cancelled = false;
             const body = new ReadableStream({
@@ -208,6 +212,7 @@ export function createChatHandler(options = {}) {
                         if (!cancelled) stream.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
                     };
                     let chars = 0;
+                    let cardSent = false;
                     let completed = false;
                     try {
                         for await (const event of events){
@@ -216,7 +221,14 @@ export function createChatHandler(options = {}) {
                                 chars += event.text.length;
                                 if (chars > AI_LIMITS.assistantChars) throw new Error("output limit");
                                 emit(event);
-                            } else {
+                            } else if (event.type === "message_card") {
+                                const card = validateMessageCard(event.card);
+                                if (!messageCards || cardSent || !card) throw new Error("Invalid card response");
+                                chars += card.title.length + card.body.length + 2 + (chars ? 2 : 0);
+                                if (chars > AI_LIMITS.assistantChars) throw new Error("output limit");
+                                cardSent = true;
+                                emit({ type: "message_card", card });
+                            } else if (event.type === "done") {
                                 if (!chars) throw new Error("empty response");
                                 completed = true;
                                 emit({
@@ -224,7 +236,7 @@ export function createChatHandler(options = {}) {
                                 });
                                 finish("completed", event.inputTokens, event.outputTokens);
                                 break;
-                            }
+                            } else throw new Error("Invalid response event");
                         }
                         if (!completed) throw new Error("incomplete stream");
                     } catch (error) {
