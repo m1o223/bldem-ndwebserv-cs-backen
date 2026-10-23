@@ -42,6 +42,7 @@ test("strict card tool is opt-in and leaves existing plain-text API settings unc
   assert.equal(sent.tools[0].parameters.additionalProperties, false);
   assert.ok(sent.instructions.startsWith(instructions));
   assert.match(sent.instructions, /Never invent names/);
+  assert.match(sent.instructions, /English request about Stockholm still requires an English draft/);
   assert.equal(sent.store, false);
   assert.equal(sent.stream, true);
   assert.equal(sent.max_output_tokens, 2000);
