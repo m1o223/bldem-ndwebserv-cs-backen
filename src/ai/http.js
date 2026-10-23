@@ -2,8 +2,9 @@ import { once } from "node:events";
 import { AI_LIMITS } from "./contract.js";
 import { allowedAiOrigins } from "./config.js";
 import { createChatHandler } from "./server.js";
+import { createAttachmentSessions } from "./attachment-session.js";
 
-function readIncomingBody(req, signal, timeoutMs) {
+function readIncomingBody(req, signal, timeoutMs, limit) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
@@ -16,7 +17,7 @@ function readIncomingBody(req, signal, timeoutMs) {
     };
     const onData = chunk => {
       size += chunk.length;
-      if (size > AI_LIMITS.bodyBytes) finish(Object.assign(new Error("body limit"), { status: 413 }));
+      if (size > limit) finish(Object.assign(new Error("body limit"), { status: 413 }));
       else chunks.push(chunk);
     };
     const onEnd = () => finish();
@@ -31,7 +32,8 @@ function readIncomingBody(req, signal, timeoutMs) {
 
 // This adapter is the only integration point with the existing Node HTTP server.
 export function createAiRoute(env, options = {}) {
-  const handle = createChatHandler({ ...options, env });
+  const sessions = createAttachmentSessions();
+  const handle = createChatHandler({ ...options, env, sessions });
   const allowed = allowedAiOrigins(env);
   let receiving = 0;
   return async (req, res) => {
@@ -63,7 +65,10 @@ export function createAiRoute(env, options = {}) {
     if (!methods.includes(req.method)) { res.setHeader("Allow", [...methods, "OPTIONS"].join(", ")); return reject(405, "invalid"); }
     if (req.method === "POST" && req.headers["content-type"]?.split(";")[0].trim() !== "application/json") return reject(415, "invalid");
     if (req.headers["content-encoding"] && req.headers["content-encoding"] !== "identity") return reject(415, "invalid");
-    if (Number(req.headers["content-length"]) > AI_LIMITS.bodyBytes) {
+    const token = req.headers["x-ai-attachment-session"];
+    if (token !== undefined && !sessions.verify(token)) return reject(401, "attachment_session");
+    const limit = token ? AI_LIMITS.bodyBytes : AI_LIMITS.textBodyBytes;
+    if (Number(req.headers["content-length"]) > limit) {
       res.setHeader("Connection", "close");
       return reject(413, "invalid");
     }
@@ -76,13 +81,14 @@ export function createAiRoute(env, options = {}) {
     let reader;
     try {
       let body;
-      try { if (req.method === "POST") body = await readIncomingBody(req, controller.signal, options.bodyTimeoutMs ?? 5000); }
+      try { if (req.method === "POST") body = await readIncomingBody(req, controller.signal, options.bodyTimeoutMs ?? 15000, limit); }
       catch (error) {
         if (!res.destroyed) res.setHeader("Connection", "close");
         return reject(error.status === 413 ? 413 : error.status === 408 ? 408 : 400, "invalid");
       }
       const request = new Request(`http://backend.internal${path}`, {
-        method: req.method, headers: { Origin: origin, "Content-Type": "application/json" }, body, signal: controller.signal,
+        method: req.method, headers: { Origin: origin, "Content-Type": "application/json",
+          ...(typeof req.headers["x-ai-attachment-session"] === "string" ? { "x-ai-attachment-session": req.headers["x-ai-attachment-session"] } : {}) }, body, signal: controller.signal,
       });
       const response = await handle(request, req.socket.remoteAddress || "unknown");
       if (res.destroyed) { await response.body?.cancel(); return; }

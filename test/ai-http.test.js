@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import test from "node:test";
 import { createHealthServer } from "../src/server.js";
 import { allowedAiOrigins } from "../src/ai/config.js";
+import { file } from "./fixtures/attachments.mjs";
 
 const origin = "https://approved-preview.example.com";
 const env = { NODE_ENV: "test", ALLOWED_ORIGINS: "https://existing.example.com", AI_ALLOWED_ORIGINS: origin, AI_ENABLED: "true", OPENAI_API_KEY: "test-not-a-real-key" };
@@ -20,6 +21,30 @@ async function withServer(run, overrides = {}, ai = {}) {
 }
 const post = (base, body = { messages }, extra = {}) => fetch(`${base}/api/ai/chat`, {
   method: "POST", headers: { Origin: origin, "Content-Type": "application/json", ...extra }, body: JSON.stringify(body),
+});
+
+test("attachment HTTP session, CORS, private processing and body limits", async () => {
+  let received;
+  await withServer(async base => {
+    const authorization = (source = origin) => fetch(`${base}/api/ai/attachment-session`, { method: "POST", headers: { Origin: source, "Content-Type": "application/json" }, body: "{}" });
+    assert.equal((await authorization("https://evil.test")).status, 403);
+    const auth = await authorization(); assert.equal(auth.status, 200);
+    const { token } = await auth.json();
+    const body = { messages: [{ role: "user", content: "", attachments: [file("notes.txt", "PRIVATE-FIXTURE-91")] }] };
+    assert.equal((await post(base, body)).status, 401);
+    assert.equal((await post(base, body, { "x-ai-attachment-session": "invalid" })).status, 401);
+    const result = await post(base, body, { "x-ai-attachment-session": token });
+    assert.equal(result.status, 200); assert.match(await result.text(), /done/);
+    assert.match(received[0].content[1].text, /PRIVATE-FIXTURE-91/);
+    const oversized = await new Promise((resolve, reject) => {
+      const request = httpRequest(`${base}/api/ai/chat`, { method: "POST", headers: { Origin: origin, "Content-Type": "application/json", "Content-Length": "3700001", "x-ai-attachment-session": token } }, response => {
+        response.resume(); response.on("end", () => resolve(response.statusCode));
+      });
+      request.on("error", reject); request.end("{}");
+    });
+    assert.equal(oversized, 413);
+    assert.equal((await fetch(`${base}/api/health`)).status, 200);
+  }, {}, { provider: async input => { received = input; return provider(); } });
 });
 
 test("malformed request URLs cannot crash AI route dispatch", async () => {

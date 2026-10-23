@@ -3,6 +3,8 @@ import { AI_LIMITS, validateTurns } from "./contract.js";
 import { openAIProvider } from "./provider.js";
 import { allowedAiOrigins } from "./config.js";
 import { MESSAGE_CARD_FORMAT, validateMessageCard } from "./message-card.js";
+import { prepareAttachments } from "./attachments.js";
+import { createAttachmentSessions } from "./attachment-session.js";
 export function configurationIssue(env = process.env) {
     if (env.AI_ENABLED !== "true") return "feature_disabled";
     if (!env.OPENAI_API_KEY?.trim()) return "missing_api_key";
@@ -67,7 +69,8 @@ const jsonError = (code, status)=>Response.json({
         }
     });
 async function readBody(request) {
-    if (Number(request.headers.get("content-length")) > AI_LIMITS.bodyBytes) throw new Error("size");
+    const limit = request.headers.has("x-ai-attachment-session") ? AI_LIMITS.bodyBytes : AI_LIMITS.textBodyBytes;
+    if (Number(request.headers.get("content-length")) > limit) throw new Error("size");
     const reader = request.body?.getReader();
     if (!reader) throw new Error("body");
     let bytes = 0;
@@ -83,7 +86,7 @@ async function readBody(request) {
             if (expired) throw new Error("timeout");
             if (chunk.done) break;
             bytes += chunk.value.byteLength;
-            if (bytes > AI_LIMITS.bodyBytes) {
+            if (bytes > limit) {
                 await reader.cancel();
                 throw new Error("size");
             }
@@ -121,6 +124,7 @@ export function classifyFailure(error, aborted) {
     } else if (providerStatus === 400 || providerStatus === 422) diagnostic = "provider_request_invalid";
     else if (detail.name === "APIConnectionError") diagnostic = "provider_connection";
     else if (detail.code === "incomplete_response") diagnostic = "provider_incomplete";
+    if (["attachment_invalid", "attachment_limit"].includes(detail.code)) { code = detail.code; diagnostic = detail.code; }
     return {
         code,
         diagnostic,
@@ -132,6 +136,7 @@ export function classifyFailure(error, aborted) {
 export function createChatHandler(options = {}) {
     let reportedConfiguration = null;
     const acquire = options.limiter ?? createLimiter();
+    const sessions = options.sessions ?? createAttachmentSessions();
     return async (request, peerAddress = "unknown")=>{
         const env = options.env ?? process.env;
         const log = options.log ?? ((entry)=>console.info(JSON.stringify(entry)));
@@ -153,6 +158,11 @@ export function createChatHandler(options = {}) {
         if (!allowedAiOrigins(env)?.has(request.headers.get("origin"))) return jsonError("invalid", 403);
         if (request.method !== "POST") return jsonError("invalid", 405);
         if (request.headers.get("content-type")?.split(";")[0].trim() !== "application/json") return jsonError("invalid", 415);
+        if (new URL(request.url).pathname === "/api/ai/attachment-session") {
+            const token = sessions.issue();
+            return token ? Response.json({ token }, { headers: { "Cache-Control": "no-store" } }) : jsonError("rate", 429);
+        }
+        if (request.headers.has("x-ai-attachment-session") && !sessions.verify(request.headers.get("x-ai-attachment-session"))) return jsonError("attachment_session", 401);
         // Do not trust client-supplied forwarding headers. Proxy peers can share a quota.
         const clientId = createHash("sha256").update(salt).update(peerAddress.slice(0, 200)).digest("hex");
         const release = acquire(clientId);
@@ -170,6 +180,14 @@ export function createChatHandler(options = {}) {
         if (!messages) {
             release();
             return jsonError("invalid", 400);
+        }
+        if (messages.some(message => message.attachments?.length) && !sessions.verify(request.headers.get("x-ai-attachment-session"))) {
+            release();
+            return jsonError("attachment_session", 401);
+        }
+        if (messages.some(message => message.attachments?.length) && !sessions.allowAnalysis()) {
+            release();
+            return jsonError("rate", 429);
         }
         const started = Date.now();
         const requestId = randomUUID();
@@ -203,7 +221,8 @@ export function createChatHandler(options = {}) {
         };
         try {
             const provider = options.provider ?? openAIProvider(env.OPENAI_API_KEY.trim(), env.OPENAI_MODEL?.trim() || "gpt-5.4-mini");
-            const events = await provider(messages, controller.signal, { messageCards });
+            const prepared = await prepareAttachments(messages, controller.signal);
+            const events = await provider(prepared, controller.signal, { messageCards });
             const encoder = new TextEncoder();
             let cancelled = false;
             const body = new ReadableStream({
