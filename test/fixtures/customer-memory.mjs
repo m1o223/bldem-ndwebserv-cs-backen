@@ -9,6 +9,10 @@ export function memoryDatabase() {
     return {
       async createIndex() {},
       async findOne(filter) { return rows.find(row => match(row, filter)) || null; },
+      find(filter) {
+        let result = rows.filter(row => match(row, filter));
+        return { sort(spec) { const [key, order] = Object.entries(spec)[0]; result.sort((a, b) => (a[key] > b[key] ? 1 : -1) * order); return this; }, limit(count) { result = result.slice(0, count); return this; }, async toArray() { return structuredClone(result); } };
+      },
       async insertOne(value) {
         if (rows.some(row => row._id === value._id)) throw Object.assign(new Error("duplicate"), { code: 11000 });
         rows.push(structuredClone(value));
@@ -17,7 +21,7 @@ export function memoryDatabase() {
       async updateOne(filter, update, options = {}) {
         let row = rows.find(row => match(row, filter));
         if (!row && options.upsert) { row = { ...filter, ...update.$setOnInsert }; rows.push(row); }
-        if (row) { for (const [key, value] of Object.entries(update.$inc || {})) row[key] = (row[key] || 0) + value; }
+        if (row) { Object.assign(row, structuredClone(update.$set || {})); for (const [key, value] of Object.entries(update.$inc || {})) row[key] = (row[key] || 0) + value; }
       },
     };
   } };

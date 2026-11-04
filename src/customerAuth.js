@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { getDatabase } from "./database.js";
+import { customerTypes, customerOverview, saveCustomerProfile, customerContact } from "./customerWorkspace.js";
 
 export const CUSTOMER_SESSION_SECONDS = 8 * 60 * 60;
 const WINDOW = 15 * 60 * 1000;
@@ -29,7 +30,7 @@ export async function provisionInitialCustomer(db, env) {
   } catch (error) { if (error.code !== 11000) throw error; }
 }
 
-export function createCustomerAuth({ database = () => getDatabase(), now = Date.now, env = {} } = {}) {
+export function createCustomerAuth({ database = () => getDatabase(), now = Date.now, env = {}, notify } = {}) {
   let provisioned;
   async function attempt(db, key, maximum) {
     const bucket = Math.floor(now() / WINDOW);
@@ -56,6 +57,10 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
       const account = await db.collection("customerAccounts").findOne({ email, enabled: true });
       const matches = await bcrypt.compare(body.password, account?.passwordHash || dummyHash);
       if (!account || !matches) return { status: 401, code: "credentials" };
+      // This optional choice can never prevent a valid customer from signing in.
+      if (body.customerType && customerTypes.includes(body.customerType)) {
+        await db.collection("customerAccounts").updateOne({ _id: account._id }, { $set: { customerType: body.customerType, updatedAt: new Date() } });
+      }
       const token = randomBytes(32).toString("hex");
       const expiresAt = new Date(now() + CUSTOMER_SESSION_SECONDS * 1000);
       if (validToken(previousToken)) await db.collection("customerSessions").deleteOne({ _id: hash(previousToken) });
@@ -73,19 +78,29 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
     async logout(token) {
       if (validToken(token)) await (await database()).collection("customerSessions").deleteOne({ _id: hash(token) });
     },
+    async workspace(action, token, body) {
+      const user = await this.session(token);
+      if (!user) return { status: 401, code: "credentials" };
+      const db = await database();
+      if (action === "overview") return { status: 200, ...(await customerOverview(db, user)) };
+      if (!await attempt(db, `customer:${action}:${user.id}`, action === "contact" ? 5 : 30)) return { status: 429, code: "rate" };
+      if (action === "profile") return await saveCustomerProfile(db, user, body) ? { status: 200, success: true } : { status: 400, code: "invalid" };
+      if (action === "contact") return customerContact(db, user, body, env, notify);
+      return { status: 404, code: "missing" };
+    },
   };
 }
 
-async function readBody(req) {
+async function readBody(req, maximum = 2048) {
   if (!req.headers["content-type"]?.startsWith("application/json")) throw new Error("invalid");
-  if (Number(req.headers["content-length"]) > 2048) throw new Error("invalid");
+  if (Number(req.headers["content-length"]) > maximum) throw new Error("invalid");
   const chunks = [];
   let size = 0;
   const timeout = setTimeout(() => req.destroy(), 10000);
   try {
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > 2048) throw new Error("invalid");
+      if (size > maximum) throw new Error("invalid");
       chunks.push(chunk);
     }
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -107,8 +122,8 @@ export function createCustomerRoute(env = process.env, options = {}) {
     // Browser access is same-origin through Vercel; Render never sets workspace cookies.
     if (!origins.has(req.headers.origin)) return reply(403, { code: "forbidden" });
     const action = pathname.slice("/api/customer/".length);
-    if (!["login", "session", "logout"].includes(action)) return reply(404, { code: "missing" });
-    if (req.method !== (action === "session" ? "GET" : "POST")) return reply(405, { code: "method" });
+    if (!["login", "session", "logout", "overview", "profile", "contact"].includes(action)) return reply(404, { code: "missing" });
+    if (req.method !== (["session", "overview"].includes(action) ? "GET" : "POST")) return reply(405, { code: "method" });
     const token = req.headers.authorization?.replace(/^Bearer /, "");
     try {
       if (action === "session") {
@@ -119,9 +134,14 @@ export function createCustomerRoute(env = process.env, options = {}) {
         await auth.logout(token);
         return reply(200, { success: true });
       }
+      if (action === "overview") {
+        const { status, ...result } = await auth.workspace(action, token);
+        return reply(status, result);
+      }
+      if (action !== "login" && !await auth.session(token)) return reply(401, { code: "credentials" });
       let body;
-      try { body = await readBody(req); } catch { return reply(400, { code: "invalid" }); }
-      const { status, ...result } = await auth.login(body, token);
+      try { body = await readBody(req, action === "login" ? 2048 : 20000); } catch { return reply(400, { code: "invalid" }); }
+      const { status, ...result } = action === "login" ? await auth.login(body, token) : await auth.workspace(action, token, body);
       return reply(status, result);
     } catch {
       return reply(503, { code: "unavailable" });
