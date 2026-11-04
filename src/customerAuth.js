@@ -1,0 +1,130 @@
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import bcrypt from "bcryptjs";
+import { getDatabase } from "./database.js";
+
+export const CUSTOMER_SESSION_SECONDS = 8 * 60 * 60;
+const WINDOW = 15 * 60 * 1000;
+const hash = value => createHash("sha256").update(value).digest("hex");
+const validToken = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+// Unknown accounts take the same bcrypt path as valid accounts.
+const dummyHash = bcrypt.hashSync(randomBytes(32).toString("hex"), 12);
+const identity = user => ({ id: String(user._id), displayName: user.displayName, email: user.email });
+
+export async function ensureCustomerIndexes(db) {
+  await db.collection("customerAccounts").createIndex({ email: 1 }, { unique: true });
+  await db.collection("customerSessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await db.collection("customerLoginLimits").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+}
+
+export async function provisionInitialCustomer(db, env) {
+  const email = env.CUSTOMER_INITIAL_EMAIL?.trim().toLowerCase();
+  const passwordHash = env.CUSTOMER_INITIAL_PASSWORD_HASH;
+  if (!email && !passwordHash) return;
+  if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^\$2[aby]\$12\$[./A-Za-z0-9]{53}$/.test(passwordHash || "")) throw new Error("Invalid customer provisioning configuration");
+  await ensureCustomerIndexes(db);
+  const accounts = db.collection("customerAccounts");
+  if (await accounts.findOne({ email })) return;
+  try {
+    await accounts.insertOne({ _id: randomUUID(), email, displayName: email, passwordHash, enabled: true, createdAt: new Date() });
+  } catch (error) { if (error.code !== 11000) throw error; }
+}
+
+export function createCustomerAuth({ database = () => getDatabase(), now = Date.now, env = {} } = {}) {
+  let provisioned;
+  async function attempt(db, key, maximum) {
+    const bucket = Math.floor(now() / WINDOW);
+    const _id = hash(key) + ":" + bucket;
+    const limits = db.collection("customerLoginLimits");
+    try {
+      await limits.updateOne({ _id }, { $inc: { count: 1 }, $setOnInsert: { expiresAt: new Date((bucket + 2) * WINDOW) } }, { upsert: true });
+    } catch (error) {
+      if (error.code !== 11000) throw error;
+      await limits.updateOne({ _id }, { $inc: { count: 1 } });
+    }
+    return (await limits.findOne({ _id })).count <= maximum;
+  }
+  return {
+    async login(body, previousToken) {
+      if (!body || typeof body.email !== "string" || typeof body.password !== "string") return { status: 400, code: "invalid" };
+      const email = body.email.trim().toLowerCase();
+      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !body.password || Buffer.byteLength(body.password) > 72) return { status: 400, code: "invalid" };
+      const db = await database();
+      await ensureCustomerIndexes(db);
+      provisioned ??= provisionInitialCustomer(db, env).catch(error => { provisioned = undefined; throw error; });
+      await provisioned;
+      if (!await attempt(db, "global", 100) || !await attempt(db, email, 5)) return { status: 429, code: "rate" };
+      const account = await db.collection("customerAccounts").findOne({ email, enabled: true });
+      const matches = await bcrypt.compare(body.password, account?.passwordHash || dummyHash);
+      if (!account || !matches) return { status: 401, code: "credentials" };
+      const token = randomBytes(32).toString("hex");
+      const expiresAt = new Date(now() + CUSTOMER_SESSION_SECONDS * 1000);
+      if (validToken(previousToken)) await db.collection("customerSessions").deleteOne({ _id: hash(previousToken) });
+      await db.collection("customerSessions").insertOne({ _id: hash(token), customerId: account._id, expiresAt });
+      return { status: 200, token, user: identity(account), expiresAt: expiresAt.toISOString() };
+    },
+    async session(token) {
+      if (!validToken(token)) return null;
+      const db = await database();
+      const session = await db.collection("customerSessions").findOne({ _id: hash(token), expiresAt: { $gt: new Date(now()) } });
+      if (!session) return null;
+      const account = await db.collection("customerAccounts").findOne({ _id: session.customerId, enabled: true });
+      return account ? identity(account) : null;
+    },
+    async logout(token) {
+      if (validToken(token)) await (await database()).collection("customerSessions").deleteOne({ _id: hash(token) });
+    },
+  };
+}
+
+async function readBody(req) {
+  if (!req.headers["content-type"]?.startsWith("application/json")) throw new Error("invalid");
+  if (Number(req.headers["content-length"]) > 2048) throw new Error("invalid");
+  const chunks = [];
+  let size = 0;
+  const timeout = setTimeout(() => req.destroy(), 10000);
+  try {
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > 2048) throw new Error("invalid");
+      chunks.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } finally { clearTimeout(timeout); }
+}
+
+export function createCustomerRoute(env = process.env, options = {}) {
+  const auth = createCustomerAuth({ database: () => getDatabase(env), env, ...options });
+  const origins = new Set(["https://bluemind-web-service.vercel.app", "https://bluemindwebservice.com", "https://www.bluemindwebservice.com"]);
+  if (env.NODE_ENV !== "production") origins.add("http://localhost:3199");
+  return async (req, res, pathname) => {
+    const reply = (status, body) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Content-Type", "application/json");
+      if (status === 429) res.setHeader("Retry-After", "900");
+      res.writeHead(status);
+      res.end(JSON.stringify(body));
+    };
+    // Browser access is same-origin through Vercel; Render never sets workspace cookies.
+    if (!origins.has(req.headers.origin)) return reply(403, { code: "forbidden" });
+    const action = pathname.slice("/api/customer/".length);
+    if (!["login", "session", "logout"].includes(action)) return reply(404, { code: "missing" });
+    if (req.method !== (action === "session" ? "GET" : "POST")) return reply(405, { code: "method" });
+    const token = req.headers.authorization?.replace(/^Bearer /, "");
+    try {
+      if (action === "session") {
+        const user = await auth.session(token);
+        return reply(user ? 200 : 401, { user });
+      }
+      if (action === "logout") {
+        await auth.logout(token);
+        return reply(200, { success: true });
+      }
+      let body;
+      try { body = await readBody(req); } catch { return reply(400, { code: "invalid" }); }
+      const { status, ...result } = await auth.login(body, token);
+      return reply(status, result);
+    } catch {
+      return reply(503, { code: "unavailable" });
+    }
+  };
+}

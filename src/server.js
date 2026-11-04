@@ -60,6 +60,7 @@ import {
 } from "./workspaceMessenger.js";
 import { listWorkspaceToolsForEmployee } from "./workspaceTools.js";
 import { createAiRoute } from "./ai/http.js";
+import { createCustomerRoute } from "./customerAuth.js";
 
 const BODY_LIMIT_BYTES = 768 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -1391,6 +1392,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
   const allowed = parseAllowedOrigins(env);
   const checkRateLimit = createRateLimiter();
   const handleAi = createAiRoute(env, ai);
+  const handleCustomer = createCustomerRoute(env);
 
   const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -1404,6 +1406,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
     catch { return json(res, 400, { success: false, error: "Invalid request URL" }); }
     // AI has its own allowlist; it never expands access to orders or admin routes.
     if (["/api/ai/chat", "/api/ai/attachment-session"].includes(url.pathname)) return handleAi(req, res);
+    if (url.pathname.startsWith("/api/customer/")) return handleCustomer(req, res, url.pathname);
 
     const origin = req.headers.origin;
     if (origin && !allowed.has(origin)) return json(res, 403, { success: false, error: "Origin not allowed" });
