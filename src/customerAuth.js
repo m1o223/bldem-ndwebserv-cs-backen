@@ -151,6 +151,7 @@ export function createCustomerRoute(env = process.env, options = {}) {
         let body;
         try { body = await readBody(req, 4096); } catch { return reply(400, { code: "invalid" }); }
         const { status, ...result } = await auth.google(action, body, token);
+        console.info(JSON.stringify({ event: "customer_google", stage: action, status, outcome: result.code || "success" }));
         return reply(status, result);
       }
       if (action === "session") {
@@ -170,7 +171,8 @@ export function createCustomerRoute(env = process.env, options = {}) {
       try { body = await readBody(req, action === "login" ? 2048 : 20000); } catch { return reply(400, { code: "invalid" }); }
       const { status, ...result } = action === "login" ? await auth.login(body, token) : await auth.workspace(action, token, body);
       return reply(status, result);
-    } catch {
+    } catch (error) {
+      if (action.startsWith("google-")) console.warn(JSON.stringify({ event: "customer_google", stage: action, status: 503, outcome: "internal_failure", databaseCode: [11000, 85, 86, 18].includes(error?.code) ? error.code : null }));
       return reply(503, { code: "unavailable" });
     }
   };

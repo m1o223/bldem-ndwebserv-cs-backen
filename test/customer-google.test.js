@@ -2,11 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { OAuth2Client } from "google-auth-library";
 import { createCustomerAuth, createCustomerRoute } from "../src/customerAuth.js";
-import { GOOGLE_CALLBACK_URL } from "../src/customerGoogle.js";
+import { GOOGLE_CALLBACK_URL, googleFailureDiagnostic } from "../src/customerGoogle.js";
 import { memoryDatabase } from "./fixtures/customer-memory.mjs";
 import { createServer } from "node:http";
 
 const env = { GOOGLE_AUTH_ENABLED: "true", GOOGLE_CLIENT_ID: "isolated-test-client", GOOGLE_CLIENT_SECRET: "test-only-not-a-secret", GOOGLE_REDIRECT_URI: GOOGLE_CALLBACK_URL };
+test("OAuth diagnostics contain only allowlisted categories, never provider payloads", () => {
+  const error = { message: "private-code-and-token", response: { status: 400, data: { error: "invalid_grant", error_description: "private-code-and-token" } }, config: { client_secret: "private-secret" } };
+  assert.deepEqual(googleFailureDiagnostic("token_exchange", error), { event: "customer_google", stage: "token_exchange", reason: "invalid_grant", status: 400 });
+  error.response.data.error = "private-unexpected-payload";
+  assert.equal(googleFailureDiagnostic("token_exchange", error).reason, "provider_failure");
+  assert.equal(JSON.stringify(googleFailureDiagnostic("token_exchange", error)).includes("private"), false);
+});
 function setup(overrides = {}) {
   const db = memoryDatabase();
   let time = Date.now(), calls = 0, nonce, tokenOptions;

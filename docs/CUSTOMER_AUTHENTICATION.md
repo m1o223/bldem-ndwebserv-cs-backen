@@ -38,6 +38,14 @@ Render service: bluemind-web-service-backend.
 
 Google Cloud must authorize exactly that HTTPS callback. Vercel serves the callback and exchanges through Render; it does not require the Google secret. The frontend's server proxy points to https://bluemind-web-service-backend.onrender.com. CUSTOMER_AUTH_BACKEND_URL is only an isolated loopback test override and is ignored on Vercel. Initial manual password provisioning variables remain optional and must not reset existing credentials. No payment/SMTP/AI environment changes are required.
 
+## Callback diagnosis and session availability
+
+`FRONTEND_URL` and `BACKEND_URL` are not used by this authentication implementation; the production origins above are pinned. Do not introduce cross-site browser cookies or wildcard credentialed CORS to fix a server-side callback failure.
+
+The callback logs only categorical outcomes. Render logs token-exchange versus identity-verification failures with allowlisted provider error codes, never raw SDK errors, authorization codes, tokens, email addresses or request payloads. Vercel logs whether browser binding failed, the callback failed, linking is required, or a session cookie was set. A redirect back to sign-in with `google=link_required` means the verified Google email belongs to an existing password account; it does not mean the cookie disappeared. That case requires a separately authenticated linking flow, not automatic email-based linking.
+
+Protected server pages and the client guard distinguish a confirmed 401 from a temporary backend/network failure. Only confirmed unauthenticated sessions redirect to sign-in; temporary failures hide protected content and offer retry while retaining the cookie. Browser auth requests explicitly include same-origin credentials. Reloading after a successful callback revalidates the Mongo-backed session.
+
 ## Release and verification
 
 1. Run `npm test` in backend. Run frontend encoding/type checks, production build and isolated customer Playwright tests.

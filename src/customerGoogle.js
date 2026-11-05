@@ -7,6 +7,14 @@ export const GOOGLE_FLOW_SECONDS = 600;
 const hash = value => createHash("sha256").update(value).digest("hex");
 const opaque = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 
+// Never log SDK errors: they can contain authorization codes, tokens and secrets.
+export function googleFailureDiagnostic(stage, error) {
+  const providerCode = error?.response?.data?.error;
+  return { event: "customer_google", stage,
+    reason: ["invalid_client", "invalid_grant", "redirect_uri_mismatch", "access_denied"].includes(providerCode) ? providerCode : "provider_failure",
+    status: Number.isInteger(error?.response?.status) ? error.response.status : null };
+}
+
 export function createCustomerGoogle({ env, database, now, attempt, issueSession, clientFactory = options => new OAuth2Client(options) }) {
   function client() {
     if (env.GOOGLE_AUTH_ENABLED !== "true" || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || env.GOOGLE_REDIRECT_URI !== GOOGLE_CALLBACK_URL) return null;
@@ -32,11 +40,16 @@ export function createCustomerGoogle({ env, database, now, attempt, issueSession
     const flow = await flows.findOneAndDelete({ _id: hash(body.state), browserHash: hash(body.browserToken), expiresAt: { $gt: new Date(now()) } });
     if (!flow) return { status: 400, code: "google_expired" };
     let claims;
+    let stage = "token_exchange";
     try {
       const { tokens } = await google.getToken({ code: body.code, codeVerifier: flow.codeVerifier, redirect_uri: GOOGLE_CALLBACK_URL });
+      stage = "identity_verification";
       const ticket = await google.verifyIdToken({ idToken: tokens.id_token, audience: env.GOOGLE_CLIENT_ID });
       claims = ticket.getPayload();
-    } catch { return { status: 401, code: "google_failed" }; }
+    } catch (error) {
+      console.warn(JSON.stringify(googleFailureDiagnostic(stage, error)));
+      return { status: 401, code: "google_failed" };
+    }
     if (!claims || !["accounts.google.com", "https://accounts.google.com"].includes(claims.iss) || claims.aud !== env.GOOGLE_CLIENT_ID || claims.nonce !== flow.nonce || claims.email_verified !== true || typeof claims.sub !== "string" || !claims.sub || claims.sub.length > 255 || typeof claims.email !== "string" || claims.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(claims.email)) return { status: 401, code: "google_failed" };
     const accounts = db.collection("customerAccounts");
     await accounts.createIndex({ email: 1 }, { unique: true });
