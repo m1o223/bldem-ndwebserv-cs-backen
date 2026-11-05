@@ -14,7 +14,7 @@ export function customerProfile(account) {
     companyName: text(account.companyName, 180), companyNumber: text(account.companyNumber, 80),
     preferences: Object.fromEntries(preferenceKeys.map(key => [key, account.preferences?.[key] === true])),
     // Providers are never linked by matching email addresses alone.
-    loginMethods: account.passwordHash ? ["email"] : [],
+    loginMethods: [...(account.passwordHash ? ["email"] : []), ...(account.googleSubject ? ["google"] : [])],
   };
 }
 function projectView(project) {

@@ -18,6 +18,7 @@ export function memoryDatabase() {
         rows.push(structuredClone(value));
       },
       async deleteOne(filter) { const i = rows.findIndex(row => match(row, filter)); if (i >= 0) rows.splice(i, 1); },
+      async findOneAndDelete(filter) { const i = rows.findIndex(row => match(row, filter)); return i >= 0 ? rows.splice(i, 1)[0] : null; },
       async updateOne(filter, update, options = {}) {
         let row = rows.find(row => match(row, filter));
         if (!row && options.upsert) { row = { ...filter, ...update.$setOnInsert }; rows.push(row); }

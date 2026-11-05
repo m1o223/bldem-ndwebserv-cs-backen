@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { getDatabase } from "./database.js";
 import { customerTypes, customerOverview, saveCustomerProfile, customerContact } from "./customerWorkspace.js";
+import { createCustomerGoogle } from "./customerGoogle.js";
 
 export const CUSTOMER_SESSION_SECONDS = 8 * 60 * 60;
 const WINDOW = 15 * 60 * 1000;
@@ -30,7 +31,7 @@ export async function provisionInitialCustomer(db, env) {
   } catch (error) { if (error.code !== 11000) throw error; }
 }
 
-export function createCustomerAuth({ database = () => getDatabase(), now = Date.now, env = {}, notify } = {}) {
+export function createCustomerAuth({ database = () => getDatabase(), now = Date.now, env = {}, notify, googleClientFactory } = {}) {
   let provisioned;
   async function attempt(db, key, maximum) {
     const bucket = Math.floor(now() / WINDOW);
@@ -44,7 +45,16 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
     }
     return (await limits.findOne({ _id })).count <= maximum;
   }
+  async function issueSession(db, account, previousToken) {
+    await ensureCustomerIndexes(db);
+    const token = randomBytes(32).toString("hex");
+    const expiresAt = new Date(now() + CUSTOMER_SESSION_SECONDS * 1000);
+    if (validToken(previousToken)) await db.collection("customerSessions").deleteOne({ _id: hash(previousToken) });
+    await db.collection("customerSessions").insertOne({ _id: hash(token), customerId: account._id, expiresAt });
+    return { status: 200, token, user: identity(account), expiresAt: expiresAt.toISOString() };
+  }
   return {
+    google: createCustomerGoogle({ env, database, now, attempt, issueSession, clientFactory: googleClientFactory }),
     async login(body, previousToken) {
       if (!body || typeof body.email !== "string" || typeof body.password !== "string") return { status: 400, code: "invalid" };
       const email = body.email.trim().toLowerCase();
@@ -61,11 +71,7 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
       if (body.customerType && customerTypes.includes(body.customerType)) {
         await db.collection("customerAccounts").updateOne({ _id: account._id }, { $set: { customerType: body.customerType, updatedAt: new Date() } });
       }
-      const token = randomBytes(32).toString("hex");
-      const expiresAt = new Date(now() + CUSTOMER_SESSION_SECONDS * 1000);
-      if (validToken(previousToken)) await db.collection("customerSessions").deleteOne({ _id: hash(previousToken) });
-      await db.collection("customerSessions").insertOne({ _id: hash(token), customerId: account._id, expiresAt });
-      return { status: 200, token, user: identity(account), expiresAt: expiresAt.toISOString() };
+      return issueSession(db, account, previousToken);
     },
     async session(token) {
       if (!validToken(token)) return null;
@@ -122,10 +128,16 @@ export function createCustomerRoute(env = process.env, options = {}) {
     // Browser access is same-origin through Vercel; Render never sets workspace cookies.
     if (!origins.has(req.headers.origin)) return reply(403, { code: "forbidden" });
     const action = pathname.slice("/api/customer/".length);
-    if (!["login", "session", "logout", "overview", "profile", "contact"].includes(action)) return reply(404, { code: "missing" });
+    if (!["login", "session", "logout", "overview", "profile", "contact", "google-start", "google-callback"].includes(action)) return reply(404, { code: "missing" });
     if (req.method !== (["session", "overview"].includes(action) ? "GET" : "POST")) return reply(405, { code: "method" });
     const token = req.headers.authorization?.replace(/^Bearer /, "");
     try {
+      if (action === "google-start" || action === "google-callback") {
+        let body;
+        try { body = await readBody(req, 4096); } catch { return reply(400, { code: "invalid" }); }
+        const { status, ...result } = await auth.google(action, body, token);
+        return reply(status, result);
+      }
       if (action === "session") {
         const user = await auth.session(token);
         return reply(user ? 200 : 401, { user });
