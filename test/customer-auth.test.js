@@ -60,6 +60,49 @@ test("database failure fails closed", async () => {
   await assert.rejects(() => auth.session("a".repeat(64)));
   assert.equal(await auth.session("invalid"), null);
 });
+
+test("password changes require reauthentication, validate input and revoke every session", async () => {
+  const { auth, db } = await setup();
+  const one = await auth.login({ email: "customer@example.invalid", password });
+  const two = await auth.login({ email: "customer@example.invalid", password });
+  const replacement = "New-test-only-password-456!";
+  assert.equal((await auth.workspace("password", "invalid", {})).status, 401);
+  assert.equal((await auth.workspace("password", one.token, { currentPassword: "wrong", newPassword: replacement })).status, 400);
+  assert.equal((await auth.workspace("password", one.token, { currentPassword: password, newPassword: "short" })).status, 400);
+  assert.equal((await auth.workspace("password", one.token, { currentPassword: password, newPassword: "ع".repeat(40) })).status, 400);
+  assert.equal((await auth.workspace("password", one.token, { currentPassword: password, newPassword: replacement, customerId: "victim" })).status, 400);
+  assert.equal((await auth.workspace("password", one.token, { currentPassword: password, newPassword: replacement })).status, 200);
+  assert.equal(await auth.session(one.token), null);
+  assert.equal(await auth.session(two.token), null);
+  assert.equal((await auth.login({ email: "customer@example.invalid", password })).status, 401);
+  assert.equal((await auth.login({ email: "customer@example.invalid", password: replacement })).status, 200);
+  const stored = db.collections.get("customerAccounts")[0];
+  assert.equal(stored.credentialVersion, 1);
+  assert.notEqual(stored.passwordHash, replacement);
+  assert.equal(bcrypt.getRounds(stored.passwordHash), 12);
+});
+
+test("customer roles fail closed and cannot become staff or access another account", async () => {
+  const { auth, db } = await setup();
+  const login = await auth.login({ email: "customer@example.invalid", password, role: "admin", status: "active" });
+  assert.equal(login.user.role, "user");
+  assert.equal(login.user.status, "active");
+  const account = db.collections.get("customerAccounts")[0];
+  account.status = "suspended";
+  assert.equal(await auth.session(login.token), null);
+  assert.equal((await auth.login({ email: "customer@example.invalid", password })).status, 401);
+  account.status = "active"; account.role = "admin";
+  assert.equal(await auth.session(login.token), null);
+  assert.equal((await auth.login({ email: "customer@example.invalid", password })).status, 401);
+  assert.equal(account.role, "admin");
+});
+
+test("sensitive password endpoint has persistent per-user limits", async () => {
+  const { auth } = await setup();
+  const login = await auth.login({ email: "customer@example.invalid", password });
+  for (let i = 0; i < 5; i++) assert.equal((await auth.workspace("password", login.token, {})).status, 400);
+  assert.equal((await auth.workspace("password", login.token, {})).status, 429);
+});
 test("HTTP routes reject unapproved origins, wrong methods, oversized input and sanitize failures", async t => {
   const route = createCustomerRoute({ NODE_ENV: "production" }, { database: async () => { throw new Error("private database info"); } });
   const server = createServer((req, res) => route(req, res, new URL(req.url, "http://localhost").pathname));

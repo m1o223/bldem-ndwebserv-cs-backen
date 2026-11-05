@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { OAuth2Client, CodeChallengeMethod } from "google-auth-library";
+import { activeCustomer, profileImage } from "./customerIdentity.js";
 
 export const GOOGLE_CALLBACK_URL = "https://bluemindwebservice.com/api/auth/callback/google";
 export const GOOGLE_FLOW_SECONDS = 600;
@@ -45,7 +46,7 @@ export function createCustomerGoogle({ env, database, now, attempt, issueSession
       const email = claims.email.trim().toLowerCase();
       // An existing password account needs a separately authenticated linking flow.
       if (await accounts.findOne({ email })) return { status: 409, code: "google_link_required" };
-      account = { _id: randomUUID(), email, displayName: typeof claims.name === "string" && claims.name.trim() ? claims.name.trim().slice(0, 160) : email, googleSubject: claims.sub, enabled: true, createdAt: new Date(now()), customerType: flow.customerType };
+      account = { _id: randomUUID(), email, displayName: typeof claims.name === "string" && claims.name.trim() ? claims.name.trim().slice(0, 160) : email, googleSubject: claims.sub, enabled: true, role: "user", status: "active", profileImage: profileImage(claims.picture), createdAt: new Date(now()), updatedAt: new Date(now()), customerType: flow.customerType };
       try { await accounts.insertOne(account); }
       catch (error) {
         if (error.code !== 11000) throw error;
@@ -53,7 +54,8 @@ export function createCustomerGoogle({ env, database, now, attempt, issueSession
         if (!account) return { status: 409, code: "google_link_required" };
       }
     }
-    if (account.enabled !== true) return { status: 401, code: "credentials" };
+    if (!activeCustomer(account)) return { status: 401, code: "credentials" };
+    if (profileImage(claims.picture)) account = { ...account, profileImage: profileImage(claims.picture) };
     if (flow.customerType) await accounts.updateOne({ _id: account._id }, { $set: { customerType: flow.customerType, updatedAt: new Date(now()) } });
     return issueSession(db, account, previousToken);
   };

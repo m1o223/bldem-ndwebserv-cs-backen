@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { getDatabase } from "./database.js";
 import { customerTypes, customerOverview, saveCustomerProfile, customerContact } from "./customerWorkspace.js";
 import { createCustomerGoogle } from "./customerGoogle.js";
+import { activeCustomer, customerIdentity as identity } from "./customerIdentity.js";
 
 export const CUSTOMER_SESSION_SECONDS = 8 * 60 * 60;
 const WINDOW = 15 * 60 * 1000;
@@ -10,11 +11,11 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const validToken = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 // Unknown accounts take the same bcrypt path as valid accounts.
 const dummyHash = bcrypt.hashSync(randomBytes(32).toString("hex"), 12);
-const identity = user => ({ id: String(user._id), displayName: user.displayName, email: user.email });
 
 export async function ensureCustomerIndexes(db) {
   await db.collection("customerAccounts").createIndex({ email: 1 }, { unique: true });
   await db.collection("customerSessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await db.collection("customerSessions").createIndex({ customerId: 1 });
   await db.collection("customerLoginLimits").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 }
 
@@ -27,7 +28,7 @@ export async function provisionInitialCustomer(db, env) {
   const accounts = db.collection("customerAccounts");
   if (await accounts.findOne({ email })) return;
   try {
-    await accounts.insertOne({ _id: randomUUID(), email, displayName: email, passwordHash, enabled: true, createdAt: new Date() });
+    await accounts.insertOne({ _id: randomUUID(), email, displayName: email, profileImage: null, role: "user", status: "active", passwordHash, enabled: true, createdAt: new Date(), updatedAt: new Date() });
   } catch (error) { if (error.code !== 11000) throw error; }
 }
 
@@ -46,11 +47,13 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
     return (await limits.findOne({ _id })).count <= maximum;
   }
   async function issueSession(db, account, previousToken) {
+    if (!activeCustomer(account)) return { status: 401, code: "credentials" };
     await ensureCustomerIndexes(db);
     const token = randomBytes(32).toString("hex");
     const expiresAt = new Date(now() + CUSTOMER_SESSION_SECONDS * 1000);
     if (validToken(previousToken)) await db.collection("customerSessions").deleteOne({ _id: hash(previousToken) });
-    await db.collection("customerSessions").insertOne({ _id: hash(token), customerId: account._id, expiresAt });
+    await db.collection("customerSessions").insertOne({ _id: hash(token), customerId: account._id, expiresAt, createdAt: new Date(now()), credentialVersion: account.credentialVersion || 0 });
+    await db.collection("customerAccounts").updateOne({ _id: account._id, enabled: true }, { $set: { profileImage: identity(account).profileImage, updatedAt: new Date(now()), lastLoginAt: new Date(now()) } });
     return { status: 200, token, user: identity(account), expiresAt: expiresAt.toISOString() };
   }
   return {
@@ -66,7 +69,7 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
       if (!await attempt(db, "global", 100) || !await attempt(db, email, 5)) return { status: 429, code: "rate" };
       const account = await db.collection("customerAccounts").findOne({ email, enabled: true });
       const matches = await bcrypt.compare(body.password, account?.passwordHash || dummyHash);
-      if (!account || !matches) return { status: 401, code: "credentials" };
+      if (!activeCustomer(account) || !matches) return { status: 401, code: "credentials" };
       // This optional choice can never prevent a valid customer from signing in.
       if (body.customerType && customerTypes.includes(body.customerType)) {
         await db.collection("customerAccounts").updateOne({ _id: account._id }, { $set: { customerType: body.customerType, updatedAt: new Date() } });
@@ -79,7 +82,7 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
       const session = await db.collection("customerSessions").findOne({ _id: hash(token), expiresAt: { $gt: new Date(now()) } });
       if (!session) return null;
       const account = await db.collection("customerAccounts").findOne({ _id: session.customerId, enabled: true });
-      return account ? identity(account) : null;
+      return activeCustomer(account) && (session.credentialVersion || 0) === (account.credentialVersion || 0) ? identity(account) : null;
     },
     async logout(token) {
       if (validToken(token)) await (await database()).collection("customerSessions").deleteOne({ _id: hash(token) });
@@ -89,7 +92,19 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
       if (!user) return { status: 401, code: "credentials" };
       const db = await database();
       if (action === "overview") return { status: 200, ...(await customerOverview(db, user)) };
-      if (!await attempt(db, `customer:${action}:${user.id}`, action === "contact" ? 5 : 30)) return { status: 429, code: "rate" };
+      if (!await attempt(db, `customer:${action}:${user.id}`, ["contact", "password"].includes(action) ? 5 : 30)) return { status: 429, code: "rate" };
+      if (action === "password") {
+        if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["currentPassword", "newPassword"].includes(key)) || typeof body.currentPassword !== "string" || !body.currentPassword || Buffer.byteLength(body.currentPassword) > 72 || typeof body.newPassword !== "string" || [...body.newPassword].length < 15 || Buffer.byteLength(body.newPassword) > 72 || body.currentPassword === body.newPassword) return { status: 400, code: "invalid" };
+        const account = await db.collection("customerAccounts").findOne({ _id: user.id });
+        if (!activeCustomer(account) || !account.passwordHash || !await bcrypt.compare(body.currentPassword, account.passwordHash)) return { status: 400, code: "invalid" };
+        const passwordHash = await bcrypt.hash(body.newPassword, 12);
+        // Compare-and-swap prevents concurrent password changes from overwriting each other.
+        const changed = await db.collection("customerAccounts").updateOne({ _id: user.id, passwordHash: account.passwordHash, enabled: true }, { $set: { passwordHash, updatedAt: new Date(now()) }, $inc: { credentialVersion: 1 } });
+        if (changed.matchedCount !== 1) return { status: 400, code: "invalid" };
+        // Version checking revokes every existing session, including concurrent login requests.
+        await db.collection("customerSessions").deleteMany({ customerId: user.id });
+        return { status: 200, success: true };
+      }
       if (action === "profile") return await saveCustomerProfile(db, user, body) ? { status: 200, success: true } : { status: 400, code: "invalid" };
       if (action === "contact") return customerContact(db, user, body, env, notify);
       return { status: 404, code: "missing" };
@@ -128,7 +143,7 @@ export function createCustomerRoute(env = process.env, options = {}) {
     // Browser access is same-origin through Vercel; Render never sets workspace cookies.
     if (!origins.has(req.headers.origin)) return reply(403, { code: "forbidden" });
     const action = pathname.slice("/api/customer/".length);
-    if (!["login", "session", "logout", "overview", "profile", "contact", "google-start", "google-callback"].includes(action)) return reply(404, { code: "missing" });
+    if (!["login", "session", "logout", "overview", "profile", "contact", "password", "google-start", "google-callback"].includes(action)) return reply(404, { code: "missing" });
     if (req.method !== (["session", "overview"].includes(action) ? "GET" : "POST")) return reply(405, { code: "method" });
     const token = req.headers.authorization?.replace(/^Bearer /, "");
     try {

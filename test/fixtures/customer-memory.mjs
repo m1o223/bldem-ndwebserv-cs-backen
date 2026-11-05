@@ -18,11 +18,13 @@ export function memoryDatabase() {
         rows.push(structuredClone(value));
       },
       async deleteOne(filter) { const i = rows.findIndex(row => match(row, filter)); if (i >= 0) rows.splice(i, 1); },
+      async deleteMany(filter) { for (let i = rows.length - 1; i >= 0; i--) if (match(rows[i], filter)) rows.splice(i, 1); },
       async findOneAndDelete(filter) { const i = rows.findIndex(row => match(row, filter)); return i >= 0 ? rows.splice(i, 1)[0] : null; },
       async updateOne(filter, update, options = {}) {
         let row = rows.find(row => match(row, filter));
         if (!row && options.upsert) { row = { ...filter, ...update.$setOnInsert }; rows.push(row); }
         if (row) { Object.assign(row, structuredClone(update.$set || {})); for (const [key, value] of Object.entries(update.$inc || {})) row[key] = (row[key] || 0) + value; }
+        return { matchedCount: row ? 1 : 0 };
       },
     };
   } };

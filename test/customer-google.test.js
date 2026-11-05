@@ -121,6 +121,22 @@ test("Google start requests have persistent global rate limits", async () => {
   assert.equal((await s.auth.google("google-start", {})).status, 429);
 });
 
+test("Google profile uses explicit customer metadata and only trusted HTTPS profile images", async () => {
+  for (const picture of ["https://lh3.googleusercontent.com/a/test", "javascript:alert(1)", "https://attacker.invalid/a.png"]) {
+    const s = setup({ claims: { picture } }), flow = await s.start();
+    const login = await s.auth.google("google-callback", flow.body);
+    assert.equal(login.user.role, "user");
+    assert.equal(login.user.status, "active");
+    assert.equal(login.user.profileImage, picture.startsWith("https://lh3.") ? picture : null);
+    const account = s.db.collections.get("customerAccounts")[0];
+    assert.ok(account.createdAt && account.updatedAt && account.lastLoginAt);
+    account.status = "suspended";
+    assert.equal(await s.auth.session(login.token), null);
+    const next = await s.start();
+    assert.equal((await s.auth.google("google-callback", next.body)).status, 401);
+  }
+});
+
 test("Google HTTP endpoints enforce origin, method, body size and return a safe unconfigured response", async t => {
   const route = createCustomerRoute({ NODE_ENV: "production" });
   const server = createServer((req, res) => route(req, res, new URL(req.url, "http://localhost").pathname));
