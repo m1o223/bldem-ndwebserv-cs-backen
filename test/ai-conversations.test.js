@@ -24,6 +24,10 @@ test("visitor conversation is claimed by the same customer and remains private",
   assert.equal(visitorView.messages[0].role, "user");
   assert.equal(visitorView.messages[0].content, "I need a cafe website.");
 
+  // The account list must claim the guest conversation after sign-in even
+  // when the user has not opened the conversation URL yet.
+  assert.equal((await store.listForCustomer({ authorization: `Bearer ${customerToken}`, visitorToken })).length, 1);
+
   await store.saveCompleted({
     conversationId, authorization: `Bearer ${customerToken}`, visitorToken,
     messages: [
@@ -35,7 +39,7 @@ test("visitor conversation is claimed by the same customer and remains private",
   });
   const accountView = await store.getForUser({ conversationId, authorization: `Bearer ${customerToken}` });
   assert.equal(accountView.messages.length, 4);
-  assert.equal((await store.listForCustomer({ authorization: `Bearer ${customerToken}` })).length, 1);
+  assert.equal((await store.listForCustomer({ authorization: `Bearer ${customerToken}`, visitorToken })).length, 1);
   await assert.rejects(() => store.getForUser({ conversationId, authorization: `Bearer ${otherCustomerToken}` }), error => error.statusCode === 404);
   await assert.rejects(() => store.getForUser({ conversationId, visitorToken: "d".repeat(64) }), error => error.statusCode === 404);
 });

@@ -118,11 +118,25 @@ export function createAiConversationStore({ env = process.env, database = () => 
     return { conversationId };
   }
 
-  async function listForCustomer({ authorization }) {
-    const identity = await owner({ authorization });
+  async function listForCustomer({ authorization, visitorToken }) {
+    const identity = await owner({ authorization, visitorToken });
     if (!identity.customerId) throw statusError("Authentication required.", 401);
     const db = await database();
     await ensureAiConversationIndexes(db);
+
+    // A guest conversation is claimable only through the same visitor token
+    // that created it. Claim it before listing so the account page can show
+    // the chat immediately after OAuth or email sign-in, even if the user
+    // has not opened the conversation URL first.
+    if (identity.visitorHash) {
+      const guestRows = await db.collection("aiConversations")
+        .find({ customerId: { $exists: false }, visitorHash: identity.visitorHash })
+        .toArray();
+      await Promise.all(guestRows.map(row => db.collection("aiConversations").updateOne(
+        { _id: row._id, customerId: { $exists: false }, visitorHash: identity.visitorHash },
+        { $set: { customerId: identity.customerId }, $unset: { visitorHash: "" } },
+      )));
+    }
     const rows = await db.collection("aiConversations").find({ customerId: identity.customerId, messageCount: { $gt: 0 } }).sort({ updatedAt: -1 }).limit(100).toArray();
     return rows.map(row => ({ id: row._id, title: row.title, source: row.source || null, messageCount: row.messageCount || 0, createdAt: row.createdAt?.toISOString?.() || null, updatedAt: row.updatedAt?.toISOString?.() || null }));
   }
@@ -161,7 +175,7 @@ export function createAiConversationRoute(env = process.env, options = {}) {
     const authorization = req.headers.authorization;
     const visitorToken = req.headers["x-ai-visitor-token"];
     try {
-      if (pathname === "/api/ai/conversations" && req.method === "GET") return reply(200, { conversations: await store.listForCustomer({ authorization }) });
+      if (pathname === "/api/ai/conversations" && req.method === "GET") return reply(200, { conversations: await store.listForCustomer({ authorization, visitorToken }) });
       if (pathname === "/api/ai/conversations" || !validConversationId(conversationId)) return reply(404, { code: "missing" });
       if (req.method !== "GET") return reply(405, { code: "method" });
       return reply(200, { conversation: await store.getForUser({ conversationId, authorization, visitorToken }) });
