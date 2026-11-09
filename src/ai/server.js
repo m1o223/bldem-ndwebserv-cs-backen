@@ -131,7 +131,8 @@ export function classifyFailure(error, aborted) {
         diagnostic,
         ...providerStatus ? {
             providerStatus
-        } : {}
+        } : {},
+        ...typeof detail.persistenceCode === "string" && /^[a-z_]{1,40}$/.test(detail.persistenceCode) ? { persistenceCode: detail.persistenceCode } : {}
     };
 }
 export function createChatHandler(options = {}) {
