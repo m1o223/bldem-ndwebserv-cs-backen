@@ -91,8 +91,12 @@ export function createAiConversationStore({ env = process.env, database = () => 
       { upsert: true },
     );
 
-    for (const message of turns) {
-      const clientMessageId = cleanText(message.id, 120) || hash(`${message.role}:${message.content}`);
+    for (let index = 0; index < turns.length; index++) {
+      const message = turns[index];
+      const precedingUser = [...turns.slice(0, index)].reverse().find(item => item.role === "user");
+      const clientMessageId = message.role === "assistant" && precedingUser
+        ? `${cleanText(precedingUser.id, 120) || hash(precedingUser.content)}:assistant`
+        : cleanText(message.id, 120) || hash(`${message.role}:${message.content}`);
       const content = cleanText(displayContent(message.content), message.role === "user" ? 4000 : 12000);
       if (!content && !message.attachments?.length) continue;
       await db.collection("aiConversationMessages").updateOne(

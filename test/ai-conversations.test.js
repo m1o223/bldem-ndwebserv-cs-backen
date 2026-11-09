@@ -28,7 +28,7 @@ test("visitor conversation is claimed by the same customer and remains private",
     conversationId, authorization: `Bearer ${customerToken}`, visitorToken,
     messages: [
       { id: "user-1", role: "user", content: "I need a cafe website." },
-      { id: "user-1:assistant", role: "assistant", content: "Let's organize the cafe requirements." },
+      { id: "assistant-1", role: "assistant", content: "Let's organize the cafe requirements." },
       { id: "user-2", role: "user", content: "Add a menu page." },
     ],
     assistantText: "A menu page will fit the cafe project.",
