@@ -24,6 +24,10 @@ function displayContent(value) {
 }
 
 function statusError(message, statusCode) { return Object.assign(new Error(message), { statusCode }); }
+async function persist(operation, task) {
+  try { return await task(); }
+  catch { throw Object.assign(new Error("Conversation persistence failed"), { code: "conversation_persistence", persistenceCode: operation }); }
+}
 
 export async function ensureAiConversationIndexes(db) {
   await db.collection("aiConversations").createIndex({ customerId: 1, updatedAt: -1 });
@@ -47,8 +51,8 @@ export function createAiConversationStore({ env = process.env, database = () => 
       if (!allowMissing) throw statusError("Conversation not found.", 404);
       return { ...identity, conversation: null };
     }
-    const db = await database();
-    await ensureAiConversationIndexes(db);
+    const db = await persist("database", () => database());
+    await persist("indexes", () => ensureAiConversationIndexes(db));
     const conversation = await db.collection("aiConversations").findOne({ _id: conversationId });
     if (!conversation) {
       if (!allowMissing) throw statusError("Conversation not found.", 404);
@@ -81,7 +85,7 @@ export function createAiConversationStore({ env = process.env, database = () => 
       ...(access.customerId ? { customerId: access.customerId } : { visitorHash: access.visitorHash }),
     };
     if (access.conversation?.customerId && access.conversation.customerId !== access.customerId) throw statusError("Conversation not found.", 404);
-    await db.collection("aiConversations").updateOne(
+    await persist("conversation", () => db.collection("aiConversations").updateOne(
       { _id: conversationId },
       {
         $setOnInsert: base,
@@ -89,7 +93,7 @@ export function createAiConversationStore({ env = process.env, database = () => 
         ...(access.customerId && access.conversation?.visitorHash ? { $unset: { visitorHash: "" } } : {}),
       },
       { upsert: true },
-    );
+    ));
 
     for (let index = 0; index < turns.length; index++) {
       const message = turns[index];
@@ -99,19 +103,20 @@ export function createAiConversationStore({ env = process.env, database = () => 
         : cleanText(message.id, 120) || hash(`${message.role}:${message.content}`);
       const content = cleanText(displayContent(message.content), message.role === "user" ? 4000 : 12000);
       if (!content && !message.attachments?.length) continue;
-      await db.collection("aiConversationMessages").updateOne(
+      await persist("message", () => db.collection("aiConversationMessages").updateOne(
         { conversationId, clientMessageId },
         { $setOnInsert: { _id: randomUUID(), conversationId, clientMessageId, role: message.role, content, attachments: message.attachments || [], createdAt: now } },
         { upsert: true },
-      );
+      ));
     }
     const assistantId = `${cleanText(lastUser.id, 120) || hash(lastUser.content)}:assistant`;
-    await db.collection("aiConversationMessages").updateOne(
+    await persist("assistant", () => db.collection("aiConversationMessages").updateOne(
       { conversationId, clientMessageId: assistantId },
       { $set: { role: "assistant", content: card ? "" : cleanAssistant, card: card || null, updatedAt: now }, $setOnInsert: { _id: randomUUID(), conversationId, clientMessageId: assistantId, createdAt: now } },
       { upsert: true },
-    );
-    await db.collection("aiConversations").updateOne({ _id: conversationId }, { $set: { updatedAt: now, messageCount: await db.collection("aiConversationMessages").countDocuments({ conversationId }) } });
+    ));
+    const messageCount = await persist("count", () => db.collection("aiConversationMessages").countDocuments({ conversationId }));
+    await persist("conversation_count", () => db.collection("aiConversations").updateOne({ _id: conversationId }, { $set: { updatedAt: now, messageCount } }));
     return { conversationId };
   }
 

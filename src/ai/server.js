@@ -124,6 +124,7 @@ export function classifyFailure(error, aborted) {
     } else if (providerStatus === 400 || providerStatus === 422) diagnostic = "provider_request_invalid";
     else if (detail.name === "APIConnectionError") diagnostic = "provider_connection";
     else if (detail.code === "incomplete_response") diagnostic = "provider_incomplete";
+    else if (detail.code === "conversation_persistence") diagnostic = "conversation_persistence";
     if (["attachment_invalid", "attachment_limit"].includes(detail.code)) { code = detail.code; diagnostic = detail.code; }
     return {
         code,
@@ -228,7 +229,8 @@ export function createChatHandler(options = {}) {
                     outputTokens,
                     ...failure ? {
                         diagnostic: failure.diagnostic,
-                        providerStatus: failure.providerStatus
+                        providerStatus: failure.providerStatus,
+                        ...failure.persistenceCode ? { persistenceCode: failure.persistenceCode } : {}
                     } : {}
                 });
             }
