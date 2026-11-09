@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAiConversationStore } from "../src/ai/conversations.js";
+import { createChatHandler } from "../src/ai/server.js";
 import { memoryDatabase } from "./fixtures/customer-memory.mjs";
 
 const visitorToken = "a".repeat(64);
@@ -37,4 +38,31 @@ test("visitor conversation is claimed by the same customer and remains private",
   assert.equal((await store.listForCustomer({ authorization: `Bearer ${customerToken}` })).length, 1);
   await assert.rejects(() => store.getForUser({ conversationId, authorization: `Bearer ${otherCustomerToken}` }), error => error.statusCode === 404);
   await assert.rejects(() => store.getForUser({ conversationId, visitorToken: "d".repeat(64) }), error => error.statusCode === 404);
+});
+
+test("persistence IDs stay server-side and are not sent to the model", async () => {
+  let providerInput;
+  const handler = createChatHandler({
+    env: { AI_ENABLED: "true", OPENAI_API_KEY: "test-key", AI_ALLOWED_ORIGINS: "https://bluemindwebservice.com" },
+    provider: async messages => {
+      providerInput = messages;
+      return (async function* () {
+        yield { type: "delta", text: "Connected." };
+        yield { type: "done", inputTokens: 1, outputTokens: 1 };
+      })();
+    },
+    conversations: {
+      authorize: async () => ({}),
+      saveCompleted: async () => {},
+    },
+  });
+  const response = await handler(new Request("http://backend.internal/api/ai/chat", {
+    method: "POST",
+    headers: { Origin: "https://bluemindwebservice.com", "Content-Type": "application/json", "x-ai-conversation-id": conversationId },
+    body: JSON.stringify({ messages: [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", role: "user", content: "Hello" }] }),
+  }));
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(providerInput[0].id, undefined);
+  assert.equal(providerInput[0].content, "Hello");
 });

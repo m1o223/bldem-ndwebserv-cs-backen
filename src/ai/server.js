@@ -235,7 +235,9 @@ export function createChatHandler(options = {}) {
         };
         try {
             const provider = options.provider ?? openAIProvider(env.OPENAI_API_KEY.trim(), env.OPENAI_MODEL?.trim() || "gpt-5.4-mini");
-            const prepared = await prepareAttachments(messages, controller.signal);
+            // Client message IDs are persistence metadata; OpenAI receives only the chat turn contract.
+            const providerMessages = messages.map(({ id, ...message }) => message);
+            const prepared = await prepareAttachments(providerMessages, controller.signal);
             const events = await provider(prepared, controller.signal, { messageCards });
             const encoder = new TextEncoder();
             let cancelled = false;
