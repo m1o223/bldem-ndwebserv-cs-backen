@@ -1,7 +1,11 @@
 export function memoryDatabase() {
   const collections = new Map();
   function match(row, filter) {
-    return Object.entries(filter).every(([key, value]) => value && typeof value === "object" && "$gt" in value ? row[key] > value.$gt : String(row[key]) === String(value));
+    return Object.entries(filter).every(([key, value]) => {
+      if (value && typeof value === "object" && "$gt" in value) return row[key] > value.$gt;
+      if (value && typeof value === "object" && "$exists" in value) return (key in row) === value.$exists;
+      return String(row[key]) === String(value);
+    });
   }
   return { collections, collection(name) {
     if (!collections.has(name)) collections.set(name, []);
@@ -9,9 +13,9 @@ export function memoryDatabase() {
     return {
       async createIndex() {},
       async findOne(filter) { return rows.find(row => match(row, filter)) || null; },
-      find(filter) {
+        find(filter) {
         let result = rows.filter(row => match(row, filter));
-        return { sort(spec) { const [key, order] = Object.entries(spec)[0]; result.sort((a, b) => (a[key] > b[key] ? 1 : -1) * order); return this; }, limit(count) { result = result.slice(0, count); return this; }, async toArray() { return structuredClone(result); } };
+        return { sort(spec) { const [key, order] = Object.entries(spec)[0]; result.sort((a, b) => (a[key] > b[key] ? 1 : a[key] < b[key] ? -1 : 0) * order); return this; }, limit(count) { result = result.slice(0, count); return this; }, async toArray() { return structuredClone(result); } };
       },
       async insertOne(value) {
         if (rows.some(row => row._id === value._id)) throw Object.assign(new Error("duplicate"), { code: 11000 });
@@ -23,9 +27,10 @@ export function memoryDatabase() {
       async updateOne(filter, update, options = {}) {
         let row = rows.find(row => match(row, filter));
         if (!row && options.upsert) { row = { ...filter, ...update.$setOnInsert }; rows.push(row); }
-        if (row) { Object.assign(row, structuredClone(update.$set || {})); for (const [key, value] of Object.entries(update.$inc || {})) row[key] = (row[key] || 0) + value; }
+        if (row) { Object.assign(row, structuredClone(update.$set || {})); for (const [key, value] of Object.entries(update.$inc || {})) row[key] = (row[key] || 0) + value; for (const key of Object.keys(update.$unset || {})) delete row[key]; }
         return { matchedCount: row ? 1 : 0 };
       },
+      async countDocuments(filter = {}) { return rows.filter(row => match(row, filter)).length; },
     };
   } };
 }

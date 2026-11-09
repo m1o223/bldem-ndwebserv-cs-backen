@@ -60,6 +60,7 @@ import {
 } from "./workspaceMessenger.js";
 import { listWorkspaceToolsForEmployee } from "./workspaceTools.js";
 import { createAiRoute } from "./ai/http.js";
+import { createAiConversationRoute, createAiConversationStore } from "./ai/conversations.js";
 import { createCustomerRoute } from "./customerAuth.js";
 
 const BODY_LIMIT_BYTES = 768 * 1024;
@@ -1391,7 +1392,9 @@ async function requestOrderClarification(req, res, env, orderNumber) {
 export function createHealthServer(env = process.env, { ai = {} } = {}) {
   const allowed = parseAllowedOrigins(env);
   const checkRateLimit = createRateLimiter();
-  const handleAi = createAiRoute(env, ai);
+  const conversationStore = createAiConversationStore({ env });
+  const handleAi = createAiRoute(env, { ...ai, conversations: conversationStore });
+  const handleAiConversations = createAiConversationRoute(env, { store: conversationStore });
   const handleCustomer = createCustomerRoute(env);
 
   const server = createServer(async (req, res) => {
@@ -1445,6 +1448,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
 
     try {
       if (isStripeWebhookRoute) return await handleStripeWebhook(req, res, env);
+      if (route === "/api/ai/conversations" || route.startsWith("/api/ai/conversations/")) return await handleAiConversations(req, res, route);
 
       if (route === "/api/health") {
         if (req.method !== "GET") {

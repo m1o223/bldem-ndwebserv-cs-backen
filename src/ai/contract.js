@@ -41,7 +41,7 @@ export function validateTurns(body) {
     for (const message of messages){
         if (!message || typeof message !== "object" || Object.keys(message).some((key)=>![
                 "role",
-                "content", "attachments"
+                "content", "attachments", "id"
             ].includes(key))) return null;
         if (message.role !== "user" && message.role !== "assistant") return null;
         if (typeof message.content !== "string" || (!message.content.trim() && !message.attachments?.length)) return null;
@@ -50,9 +50,12 @@ export function validateTurns(body) {
         if (message.content.length > (message.role === "user" ? AI_LIMITS.messageChars : AI_LIMITS.assistantChars)) return null;
         chars += message.content.length;
         if (chars > AI_LIMITS.contextChars) return null;
+        const id = message.id === undefined ? undefined : typeof message.id === "string" && /^[a-f0-9-]{1,120}$/i.test(message.id) ? message.id : null;
+        if (message.id !== undefined && !id) return null;
         result.push({
             role: message.role,
             content: message.content.trim(),
+            ...(id ? { id } : {}),
             ...(attachments ? { attachments } : {})
         });
     }

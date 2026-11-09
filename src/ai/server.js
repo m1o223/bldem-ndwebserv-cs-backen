@@ -181,6 +181,20 @@ export function createChatHandler(options = {}) {
             release();
             return jsonError("invalid", 400);
         }
+        let conversationAccess = null;
+        const conversationId = request.headers.get("x-ai-conversation-id");
+        if (conversationId && options.conversations) {
+            try {
+                conversationAccess = await options.conversations.authorize({
+                    conversationId,
+                    authorization: request.headers.get("authorization"),
+                    visitorToken: request.headers.get("x-ai-visitor-token"),
+                });
+            } catch (error) {
+                release();
+                return jsonError(error?.statusCode === 401 ? "invalid" : "failed", error?.statusCode === 401 ? 401 : 404);
+            }
+        }
         if (messages.some(message => message.attachments?.length) && !sessions.verify(request.headers.get("x-ai-attachment-session"))) {
             release();
             return jsonError("attachment_session", 401);
@@ -233,12 +247,15 @@ export function createChatHandler(options = {}) {
                     let chars = 0;
                     let cardSent = false;
                     let completed = false;
+                    let responseText = "";
+                    let responseCard = null;
                     try {
                         for await (const event of events){
                             if (controller.signal.aborted) throw new Error("aborted");
                             if (event.type === "delta") {
                                 chars += event.text.length;
                                 if (chars > AI_LIMITS.assistantChars) throw new Error("output limit");
+                                responseText += event.text;
                                 emit(event);
                             } else if (event.type === "message_card") {
                                 const card = validateMessageCard(event.card);
@@ -246,10 +263,22 @@ export function createChatHandler(options = {}) {
                                 chars += card.title.length + card.body.length + 2 + (chars ? 2 : 0);
                                 if (chars > AI_LIMITS.assistantChars) throw new Error("output limit");
                                 cardSent = true;
+                                responseCard = card;
                                 emit({ type: "message_card", card });
                             } else if (event.type === "done") {
                                 if (!chars) throw new Error("empty response");
                                 completed = true;
+                                if (conversationAccess && conversationId) {
+                                    await options.conversations.saveCompleted({
+                                        conversationId,
+                                        authorization: request.headers.get("authorization"),
+                                        visitorToken: request.headers.get("x-ai-visitor-token"),
+                                        source: request.headers.get("x-ai-source"),
+                                        messages,
+                                        assistantText: responseText || `${responseCard.title}\n\n${responseCard.body}`,
+                                        card: responseCard,
+                                    });
+                                }
                                 emit({
                                     type: "done"
                                 });

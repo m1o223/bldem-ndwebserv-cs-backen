@@ -88,7 +88,11 @@ export function createAiRoute(env, options = {}) {
       }
       const request = new Request(`http://backend.internal${path}`, {
         method: req.method, headers: { Origin: origin, "Content-Type": "application/json",
-          ...(typeof req.headers["x-ai-attachment-session"] === "string" ? { "x-ai-attachment-session": req.headers["x-ai-attachment-session"] } : {}) }, body, signal: controller.signal,
+          ...(typeof req.headers["x-ai-attachment-session"] === "string" ? { "x-ai-attachment-session": req.headers["x-ai-attachment-session"] } : {}),
+          ...(typeof req.headers["x-ai-conversation-id"] === "string" ? { "x-ai-conversation-id": req.headers["x-ai-conversation-id"] } : {}),
+          ...(typeof req.headers["x-ai-visitor-token"] === "string" ? { "x-ai-visitor-token": req.headers["x-ai-visitor-token"] } : {}),
+          ...(typeof req.headers["x-ai-source"] === "string" ? { "x-ai-source": req.headers["x-ai-source"] } : {}),
+          ...(typeof req.headers.authorization === "string" ? { Authorization: req.headers.authorization } : {}) }, body, signal: controller.signal,
       });
       const response = await handle(request, req.socket.remoteAddress || "unknown");
       if (res.destroyed) { await response.body?.cancel(); return; }
