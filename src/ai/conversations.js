@@ -78,11 +78,9 @@ export function createAiConversationStore({ env = process.env, database = () => 
     const title = cleanText(displayContent(firstUser?.content || "Website idea"), MAX_TITLE) || "Website idea";
     const base = {
       _id: conversationId,
-      title,
       source: source === "what-we-build" ? source : null,
       createdAt: now,
-      updatedAt: now,
-      ...(access.customerId ? { customerId: access.customerId } : { visitorHash: access.visitorHash }),
+      ...(!access.customerId ? { visitorHash: access.visitorHash } : {}),
     };
     if (access.conversation?.customerId && access.conversation.customerId !== access.customerId) throw statusError("Conversation not found.", 404);
     await persist("conversation", () => db.collection("aiConversations").updateOne(
