@@ -5,6 +5,11 @@ import { sendFormNotification } from "./email.js";
 export const customerTypes = [null, "private", "company"];
 export const preferenceKeys = ["project", "team", "billing", "email"];
 export const projectSteps = ["idea", "review", "direction", "development", "testing", "finalReview", "delivery"];
+const welcomeMessages = Object.freeze({
+  en: "Welcome to BlueMind Web Service. How can I help you today?",
+  sv: "Välkommen till BlueMind Web Service. Hur kan jag hjälpa dig idag?",
+  ar: "مرحباً بك في BlueMind Web Service. كيف يمكنني مساعدتك اليوم?",
+});
 const text = (value, max = 300) => typeof value === "string" ? value.slice(0, max) : "";
 const date = value => value && Number.isFinite(new Date(value).getTime()) ? new Date(value).toISOString() : null;
 const messageText = value => typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim().slice(0, 4000) : "";
@@ -44,6 +49,7 @@ export async function customerOverview(db, user) {
 export async function ensureCustomerMessageIndexes(db) {
   await db.collection("customerTeamMessages").createIndex({ customerId: 1, createdAt: 1 });
   await db.collection("customerTeamMessages").createIndex({ customerId: 1, clientMessageId: 1 }, { unique: true, sparse: true });
+  await db.collection("customerTeamMessages").createIndex({ customerId: 1, systemKey: 1 }, { unique: true, sparse: true });
 }
 
 function serializeCustomerMessage(message, sender = "team") {
@@ -55,6 +61,27 @@ function serializeCustomerMessage(message, sender = "team") {
     orderNumber: text(message.orderNumber, 100) || null,
     read: message.read === true,
   };
+}
+
+export async function ensureCustomerWelcome(db, user, locale) {
+  const account = await db.collection("customerAccounts").findOne({ _id: user.id, enabled: true });
+  if (!account) return null;
+  await ensureCustomerMessageIndexes(db);
+  const existing = await db.collection("customerTeamMessages").findOne({ customerId: user.id, systemKey: "welcome" });
+  if (existing) return serializeCustomerMessage(existing);
+  const message = {
+    _id: randomUUID(), customerId: user.id, sender: "team", systemKey: "welcome",
+    body: welcomeMessages[locale] || welcomeMessages.en, orderNumber: null, read: false,
+    createdAt: new Date(), updatedAt: new Date(),
+  };
+  try {
+    await db.collection("customerTeamMessages").insertOne(message);
+    return serializeCustomerMessage(message);
+  } catch (error) {
+    if (error.code !== 11000) throw error;
+    const concurrent = await db.collection("customerTeamMessages").findOne({ customerId: user.id, systemKey: "welcome" });
+    return concurrent ? serializeCustomerMessage(concurrent) : null;
+  }
 }
 
 export async function customerMessages(db, user) {

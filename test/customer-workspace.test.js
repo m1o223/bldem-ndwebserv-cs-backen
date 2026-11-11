@@ -83,6 +83,17 @@ test("customer team messages combine notifications, persist replies, and stay sc
   assert.equal(bobMessages.messages[0].body, "Private Bob update");
   assert.equal(JSON.stringify(bobMessages).includes("Design direction updated"), false);
 });
+test("customer welcome message is localized and persisted once per account", async () => {
+  const { auth, token, db } = await setup();
+  const first = await auth.workspace("messages-welcome", token, { locale: "ar" });
+  assert.equal(first.status, 200);
+  assert.equal(first.message.sender, "team");
+  assert.equal(first.message.body, "مرحباً بك في BlueMind Web Service. كيف يمكنني مساعدتك اليوم?");
+  const second = await auth.workspace("messages-welcome", token, { locale: "sv" });
+  assert.equal(second.message.id, first.message.id);
+  assert.equal(second.message.body, first.message.body);
+  assert.equal(db.collections.get("customerTeamMessages").filter(message => message.systemKey === "welcome").length, 1);
+});
 test("contact receipt is persisted with immutable account ownership, optional type and independent reply email", async () => {
   const { db, auth, token } = await setup();
   const body = { name: "Alice", email: "reply@example.invalid", message: "Please review my idea.", customerType: null, companyName: "", orderNumber: "", customerId: "bob" };
