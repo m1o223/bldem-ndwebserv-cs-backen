@@ -91,7 +91,8 @@ test("customer welcome message is localized and persisted once per account", asy
   assert.equal(first.message.body, "مرحباً بك في BlueMind Web Service. كيف يمكنني مساعدتك اليوم?");
   const second = await auth.workspace("messages-welcome", token, { locale: "sv" });
   assert.equal(second.message.id, first.message.id);
-  assert.equal(second.message.body, first.message.body);
+  assert.equal(second.message.body, "Välkommen till BlueMind Web Service. Hur kan jag hjälpa dig idag?");
+  assert.notEqual(second.message.body, first.message.body);
   assert.equal(db.collections.get("customerTeamMessages").filter(message => message.systemKey === "welcome").length, 1);
 });
 test("contact receipt is persisted with immutable account ownership, optional type and independent reply email", async () => {

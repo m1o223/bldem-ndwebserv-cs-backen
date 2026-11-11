@@ -68,10 +68,21 @@ export async function ensureCustomerWelcome(db, user, locale) {
   if (!account) return null;
   await ensureCustomerMessageIndexes(db);
   const existing = await db.collection("customerTeamMessages").findOne({ customerId: user.id, systemKey: "welcome" });
-  if (existing) return serializeCustomerMessage(existing);
+  const localizedBody = welcomeMessages[locale] || welcomeMessages.en;
+  if (existing) {
+    // Keep one welcome message per account while keeping its copy in the user's current language.
+    if (existing.body !== localizedBody) {
+      await db.collection("customerTeamMessages").updateOne(
+        { _id: existing._id, customerId: user.id, systemKey: "welcome" },
+        { $set: { body: localizedBody, updatedAt: new Date() } },
+      );
+      return serializeCustomerMessage({ ...existing, body: localizedBody });
+    }
+    return serializeCustomerMessage(existing);
+  }
   const message = {
     _id: randomUUID(), customerId: user.id, sender: "team", systemKey: "welcome",
-    body: welcomeMessages[locale] || welcomeMessages.en, orderNumber: null, read: false,
+    body: localizedBody, orderNumber: null, read: false,
     createdAt: new Date(), updatedAt: new Date(),
   };
   try {
