@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { getDatabase } from "./database.js";
-import { customerTypes, customerOverview, saveCustomerProfile, customerContact } from "./customerWorkspace.js";
+import { customerTypes, customerOverview, customerMessages, ensureCustomerMessageIndexes, markCustomerMessagesRead, saveCustomerProfile, customerContact, sendCustomerMessage } from "./customerWorkspace.js";
 import { createCustomerGoogle } from "./customerGoogle.js";
 import { activeCustomer, customerIdentity as identity } from "./customerIdentity.js";
 
@@ -17,6 +17,7 @@ export async function ensureCustomerIndexes(db) {
   await db.collection("customerSessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await db.collection("customerSessions").createIndex({ customerId: 1 });
   await db.collection("customerLoginLimits").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await ensureCustomerMessageIndexes(db);
 }
 
 export async function provisionInitialCustomer(db, env) {
@@ -92,7 +93,10 @@ export function createCustomerAuth({ database = () => getDatabase(), now = Date.
       if (!user) return { status: 401, code: "credentials" };
       const db = await database();
       if (action === "overview") return { status: 200, ...(await customerOverview(db, user)) };
-      if (!await attempt(db, `customer:${action}:${user.id}`, ["contact", "password"].includes(action) ? 5 : 30)) return { status: 429, code: "rate" };
+      if (action === "messages") return { status: 200, ...(await customerMessages(db, user)) };
+      if (action === "messages-read") return { status: 200, ...(await markCustomerMessagesRead(db, user)) };
+      if (!await attempt(db, `customer:${action}:${user.id}`, ["contact", "password", "message"].includes(action) ? 5 : 30)) return { status: 429, code: "rate" };
+      if (action === "message") return await sendCustomerMessage(db, user, body);
       if (action === "password") {
         if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["currentPassword", "newPassword"].includes(key)) || typeof body.currentPassword !== "string" || !body.currentPassword || Buffer.byteLength(body.currentPassword) > 72 || typeof body.newPassword !== "string" || [...body.newPassword].length < 15 || Buffer.byteLength(body.newPassword) > 72 || body.currentPassword === body.newPassword) return { status: 400, code: "invalid" };
         const account = await db.collection("customerAccounts").findOne({ _id: user.id });
@@ -143,8 +147,8 @@ export function createCustomerRoute(env = process.env, options = {}) {
     // Browser access is same-origin through Vercel; Render never sets workspace cookies.
     if (!origins.has(req.headers.origin)) return reply(403, { code: "forbidden" });
     const action = pathname.slice("/api/customer/".length);
-    if (!["login", "session", "logout", "overview", "profile", "contact", "password", "google-start", "google-callback"].includes(action)) return reply(404, { code: "missing" });
-    if (req.method !== (["session", "overview"].includes(action) ? "GET" : "POST")) return reply(405, { code: "method" });
+    if (!["login", "session", "logout", "overview", "messages", "messages-read", "message", "profile", "contact", "password", "google-start", "google-callback"].includes(action)) return reply(404, { code: "missing" });
+    if (req.method !== (["session", "overview", "messages"].includes(action) ? "GET" : "POST")) return reply(405, { code: "method" });
     const token = req.headers.authorization?.replace(/^Bearer /, "");
     try {
       if (action === "google-start" || action === "google-callback") {
@@ -162,7 +166,7 @@ export function createCustomerRoute(env = process.env, options = {}) {
         await auth.logout(token);
         return reply(200, { success: true });
       }
-      if (action === "overview") {
+      if (action === "overview" || action === "messages") {
         const { status, ...result } = await auth.workspace(action, token);
         return reply(status, result);
       }

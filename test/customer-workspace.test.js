@@ -59,6 +59,30 @@ test("projects and notifications use session ownership, never email or order num
   const unknown = await customerOverview(db, { id: "bob" });
   assert.equal(unknown.project.progress, null); assert.equal(unknown.project.remaining, null);
 });
+test("customer team messages combine notifications, persist replies, and stay scoped to the session owner", async () => {
+  const { auth, token, db } = await setup();
+  await db.collection("customerNotifications").insertOne({ _id: "alice-update", customerId: "alice", text: "Design direction updated", orderNumber: "ALICE-1", createdAt: new Date("2026-01-01T10:00:00Z") });
+  await db.collection("customerNotifications").insertOne({ _id: "bob-update", customerId: "bob", text: "Private Bob update", createdAt: new Date("2026-01-01T11:00:00Z") });
+  const initial = await auth.workspace("messages", token);
+  assert.equal(initial.messages.length, 1);
+  assert.equal(initial.messages[0].sender, "team");
+  assert.equal(initial.messages[0].orderNumber, "ALICE-1");
+  assert.equal(initial.unread, 1);
+  const sent = await auth.workspace("message", token, { body: "Please add a menu page", orderNumber: "ALICE-1", clientMessageId: "reply-1" });
+  assert.equal(sent.status, 200);
+  const afterSend = await auth.workspace("messages", token);
+  assert.equal(afterSend.messages.length, 2);
+  assert.equal(afterSend.messages[1].sender, "customer");
+  assert.equal(afterSend.messages[1].body, "Please add a menu page");
+  assert.equal((await auth.workspace("messages-read", token, {})).success, true);
+  assert.equal((await auth.workspace("messages", token)).unread, 0);
+  const bobAuth = createCustomerAuth({ database: async () => db });
+  const bob = await bobAuth.login({ email: "bob@example.invalid", password });
+  const bobMessages = await bobAuth.workspace("messages", bob.token);
+  assert.equal(bobMessages.messages.length, 1);
+  assert.equal(bobMessages.messages[0].body, "Private Bob update");
+  assert.equal(JSON.stringify(bobMessages).includes("Design direction updated"), false);
+});
 test("contact receipt is persisted with immutable account ownership, optional type and independent reply email", async () => {
   const { db, auth, token } = await setup();
   const body = { name: "Alice", email: "reply@example.invalid", message: "Please review my idea.", customerType: null, companyName: "", orderNumber: "", customerId: "bob" };

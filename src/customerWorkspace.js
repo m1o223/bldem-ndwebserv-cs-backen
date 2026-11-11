@@ -7,6 +7,7 @@ export const preferenceKeys = ["project", "team", "billing", "email"];
 export const projectSteps = ["idea", "review", "direction", "development", "testing", "finalReview", "delivery"];
 const text = (value, max = 300) => typeof value === "string" ? value.slice(0, max) : "";
 const date = value => value && Number.isFinite(new Date(value).getTime()) ? new Date(value).toISOString() : null;
+const messageText = value => typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim().slice(0, 4000) : "";
 export function customerProfile(account) {
   return {
     fullName: text(account.fullName || (account.displayName !== account.email ? account.displayName : ""), 160),
@@ -38,6 +39,70 @@ export async function customerOverview(db, user) {
   const project = await db.collection("customerProjects").findOne({ customerId: user.id, current: true });
   const notifications = await db.collection("customerNotifications").find({ customerId: user.id }).sort({ createdAt: -1 }).limit(20).toArray();
   return { profile: customerProfile(account), project: projectView(project), notifications: notifications.map(item => ({ id: String(item._id), text: text(item.text, 1000), createdAt: date(item.createdAt), read: item.read === true })) };
+}
+
+export async function ensureCustomerMessageIndexes(db) {
+  await db.collection("customerTeamMessages").createIndex({ customerId: 1, createdAt: 1 });
+  await db.collection("customerTeamMessages").createIndex({ customerId: 1, clientMessageId: 1 }, { unique: true, sparse: true });
+}
+
+function serializeCustomerMessage(message, sender = "team") {
+  return {
+    id: String(message._id),
+    sender: message.sender === "customer" ? "customer" : sender,
+    body: messageText(message.body),
+    createdAt: date(message.createdAt),
+    orderNumber: text(message.orderNumber, 100) || null,
+    read: message.read === true,
+  };
+}
+
+export async function customerMessages(db, user) {
+  const account = await db.collection("customerAccounts").findOne({ _id: user.id, enabled: true });
+  if (!account) return null;
+  await ensureCustomerMessageIndexes(db);
+  const [notifications, messages] = await Promise.all([
+    db.collection("customerNotifications").find({ customerId: user.id }).sort({ createdAt: 1 }).limit(100).toArray(),
+    db.collection("customerTeamMessages").find({ customerId: user.id }).sort({ createdAt: 1 }).limit(100).toArray(),
+  ]);
+  const combined = [
+    ...notifications.map(item => serializeCustomerMessage({ ...item, _id: `notification:${String(item._id)}`, body: item.text, sender: "team" })),
+    ...messages.map(item => serializeCustomerMessage(item)),
+  ].sort((left, right) => {
+    const leftTime = left.createdAt ? Date.parse(left.createdAt) : 0;
+    const rightTime = right.createdAt ? Date.parse(right.createdAt) : 0;
+    return leftTime - rightTime || left.id.localeCompare(right.id);
+  });
+  return { messages: combined, unread: combined.filter(item => item.sender === "team" && !item.read).length };
+}
+
+export async function markCustomerMessagesRead(db, user) {
+  const now = new Date();
+  const [notifications, messages] = await Promise.all([
+    db.collection("customerNotifications").find({ customerId: user.id }).toArray(),
+    db.collection("customerTeamMessages").find({ customerId: user.id, sender: "team" }).toArray(),
+  ]);
+  await Promise.all([
+    ...notifications.filter(item => item.read !== true).map(item => db.collection("customerNotifications").updateOne({ _id: item._id }, { $set: { read: true, updatedAt: now } })),
+    ...messages.filter(item => item.read !== true).map(item => db.collection("customerTeamMessages").updateOne({ _id: item._id }, { $set: { read: true, updatedAt: now } })),
+  ]);
+  return { success: true };
+}
+
+export async function sendCustomerMessage(db, user, body) {
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["body", "orderNumber", "clientMessageId"].includes(key))) return { status: 400, code: "invalid" };
+  const cleanBody = messageText(body.body);
+  const orderNumber = typeof body.orderNumber === "string" ? body.orderNumber.trim().slice(0, 100) : "";
+  const clientMessageId = typeof body.clientMessageId === "string" ? body.clientMessageId.trim().slice(0, 160) : "";
+  if (!cleanBody || cleanBody.length > 4000 || (body.orderNumber !== undefined && typeof body.orderNumber !== "string") || (body.clientMessageId !== undefined && typeof body.clientMessageId !== "string")) return { status: 400, code: "invalid" };
+  await ensureCustomerMessageIndexes(db);
+  if (clientMessageId) {
+    const existing = await db.collection("customerTeamMessages").findOne({ customerId: user.id, clientMessageId });
+    if (existing) return { status: 200, message: serializeCustomerMessage(existing), duplicate: true };
+  }
+  const message = { _id: randomUUID(), customerId: user.id, sender: "customer", body: cleanBody, orderNumber: orderNumber || null, clientMessageId: clientMessageId || undefined, read: true, createdAt: new Date(), updatedAt: new Date() };
+  await db.collection("customerTeamMessages").insertOne(message);
+  return { status: 200, message: serializeCustomerMessage(message), duplicate: false };
 }
 export async function saveCustomerProfile(db, user, body) {
   if (!body || typeof body !== "object" || Object.keys(body).some(key => !["fullName", "customerType", "companyName", "companyNumber", "preferences"].includes(key))) return false;
