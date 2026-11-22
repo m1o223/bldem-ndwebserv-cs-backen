@@ -1439,7 +1439,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
       ? "GET, PATCH, OPTIONS"
       : isWorkspaceRoute
         ? "GET, POST, PATCH, OPTIONS"
-      : (isPublicReviewsRoute ? "GET, POST, OPTIONS" : isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || route === "/api/care/stripe/checkout" || route === "/api/care/subscriptions/manage" || route === "/api/care/subscriptions/cancel" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
+      : (isPublicReviewsRoute ? "GET, POST, PATCH, OPTIONS" : isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || route === "/api/care/stripe/checkout" || route === "/api/care/subscriptions/manage" || route === "/api/care/subscriptions/cancel" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
@@ -1464,7 +1464,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
       }
 
       if (isPublicReviewsRoute) {
-        if (req.method === "POST" && !checkReviewRateLimit(req)) return json(res, 429, { success: false, error: "Too many reviews submitted. Please try again later." });
+        if (["POST", "PATCH"].includes(req.method) && !checkReviewRateLimit(req)) return json(res, 429, { success: false, error: "Too many review changes. Please try again later." });
         return await handlePublicReviews(req, res, env, readJsonBody);
       }
 
