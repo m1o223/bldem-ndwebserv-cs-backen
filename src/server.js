@@ -62,6 +62,7 @@ import { listWorkspaceToolsForEmployee } from "./workspaceTools.js";
 import { createAiRoute } from "./ai/http.js";
 import { createAiConversationRoute, createAiConversationStore } from "./ai/conversations.js";
 import { createCustomerRoute } from "./customerAuth.js";
+import { handlePublicReviews } from "./publicReviews.js";
 
 const BODY_LIMIT_BYTES = 768 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -103,18 +104,18 @@ function getClientKey(req) {
   return req.socket.remoteAddress || "unknown";
 }
 
-function createRateLimiter() {
+function createRateLimiter(maxRequests = RATE_LIMIT_MAX, windowMs = RATE_LIMIT_WINDOW_MS) {
   const buckets = new Map();
   return req => {
     const now = Date.now();
     const key = getClientKey(req);
     const current = buckets.get(key);
     if (!current || current.resetAt <= now) {
-      buckets.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+      buckets.set(key, { count: 1, resetAt: now + windowMs });
       return true;
     }
     current.count += 1;
-    return current.count <= RATE_LIMIT_MAX;
+    return current.count <= maxRequests;
   };
 }
 
@@ -192,6 +193,7 @@ async function ensureCollections(db) {
     "workspaceWorkSessions",
     "workspaceCheckIns",
     "workspaceProfiles",
+    "publicReviews",
   ]) {
     if (!existing.has(name)) await db.createCollection(name);
   }
@@ -214,6 +216,7 @@ async function ensureCollections(db) {
   await db.collection("workspaceWorkSessions").createIndex({ employeeId: 1, startedAt: -1 });
   await db.collection("workspaceCheckIns").createIndex({ employeeId: 1, createdAt: -1 });
   await db.collection("workspaceProfiles").createIndex({ employeeId: 1 }, { unique: true });
+  await db.collection("publicReviews").createIndex({ status: 1, createdAt: -1 });
 }
 
 
@@ -1392,6 +1395,7 @@ async function requestOrderClarification(req, res, env, orderNumber) {
 export function createHealthServer(env = process.env, { ai = {} } = {}) {
   const allowed = parseAllowedOrigins(env);
   const checkRateLimit = createRateLimiter();
+  const checkReviewRateLimit = createRateLimiter(3, 10 * 60_000);
   const conversationStore = createAiConversationStore({ env });
   const handleAi = createAiRoute(env, { ...ai, conversations: conversationStore });
   const handleAiConversations = createAiConversationRoute(env, { store: conversationStore });
@@ -1417,6 +1421,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
 
     const route = url.pathname;
     const isFormRoute = route === "/api/contact" || route === "/api/quote";
+    const isPublicReviewsRoute = route === "/api/reviews";
     const isAdminRoute = route.startsWith("/api/admin/");
     const isWorkspaceRoute = route.startsWith("/api/workspace/") || route === "/api/employee/tools";
     const isStripeWebhookRoute = route === "/api/payments/stripe/webhook";
@@ -1434,7 +1439,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
       ? "GET, PATCH, OPTIONS"
       : isWorkspaceRoute
         ? "GET, POST, PATCH, OPTIONS"
-      : (isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || route === "/api/care/stripe/checkout" || route === "/api/care/subscriptions/manage" || route === "/api/care/subscriptions/cancel" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
+      : (isPublicReviewsRoute ? "GET, POST, OPTIONS" : isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || route === "/api/care/stripe/checkout" || route === "/api/care/subscriptions/manage" || route === "/api/care/subscriptions/cancel" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
@@ -1456,6 +1461,11 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
           return json(res, 405, { success: false, error: "Method not allowed" });
         }
         return json(res, 200, { success: true, service: "BlueMind Web Service API", status: "healthy" });
+      }
+
+      if (isPublicReviewsRoute) {
+        if (req.method === "POST" && !checkReviewRateLimit(req)) return json(res, 429, { success: false, error: "Too many reviews submitted. Please try again later." });
+        return await handlePublicReviews(req, res, env, readJsonBody);
       }
 
       if (route === "/api/pricing/packages") {
