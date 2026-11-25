@@ -923,14 +923,26 @@ async function handleFormRoute(req, res, env, route) {
 
   const body = await readJsonBody(req);
   const collectionName = route === "/api/contact" ? "contacts" : "quoteRequests";
-  const doc = route === "/api/contact" ? validateContactSubmission(body) : validateQuoteSubmission(body);
+  const doc = route === "/api/contact"
+    ? validateContactSubmission(body, { requireContactType: true })
+    : validateQuoteSubmission(body);
   const db = await getDatabase(env);
   await ensureCollections(db);
-  await db.collection(collectionName).insertOne(doc);
+  const inserted = await db.collection(collectionName).insertOne(doc);
+
   try {
-    await sendFormNotification(env, route, doc);
+    const notification = await sendFormNotification(env, route, doc);
+    if (!notification?.sent) {
+      throw new Error("Email notification is not configured");
+    }
   } catch (error) {
     console.error("Email notification failed", { route, message: error?.message });
+    try {
+      await db.collection(collectionName).deleteOne({ _id: inserted.insertedId });
+    } catch (cleanupError) {
+      console.error("Failed to remove unsent form submission", { route, message: cleanupError?.message });
+    }
+    return json(res, 502, { success: false, error: "We could not send your message. Please try again later." });
   }
 
   return json(res, 200, {
@@ -1395,6 +1407,7 @@ async function requestOrderClarification(req, res, env, orderNumber) {
 export function createHealthServer(env = process.env, { ai = {} } = {}) {
   const allowed = parseAllowedOrigins(env);
   const checkRateLimit = createRateLimiter();
+  const checkFormRateLimit = createRateLimiter(5, 10 * 60_000);
   const checkReviewRateLimit = createRateLimiter(3, 10 * 60_000);
   const conversationStore = createAiConversationStore({ env });
   const handleAi = createAiRoute(env, { ...ai, conversations: conversationStore });
@@ -1548,6 +1561,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
 
       if (!isFormRoute) return json(res, 404, { success: false, error: "Not found" });
       if (!checkRateLimit(req)) return json(res, 429, { success: false, error: "Too many requests. Please try again later." });
+      if (!checkFormRateLimit(req)) return json(res, 429, { success: false, error: "Too many contact requests. Please try again later." });
 
       return await handleFormRoute(req, res, env, route);
     } catch (error) {

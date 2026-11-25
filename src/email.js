@@ -2,6 +2,8 @@ import { Resend } from "resend";
 
 const BUSINESS_EMAIL = "admin@xn--bluemndwebservice-gvc.com";
 const DEFAULT_SENDER = "BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>";
+const CONTACT_EMAIL = "contact@bluemindwebservice.com";
+const CONTACT_SENDER = `BlueMind Web Service <${CONTACT_EMAIL}>`;
 
 let resendClient;
 let activeApiKey;
@@ -24,6 +26,17 @@ function getCustomerEmailConfig(env) {
     ...config,
     from: env.EMAIL_VERIFICATION_FROM || env.CUSTOMER_EMAIL_FROM || config.from,
     replyTo: env.EMAIL_VERIFICATION_REPLY_TO || env.CUSTOMER_EMAIL_REPLY_TO || config.to,
+  };
+}
+
+function getFormEmailConfig(env) {
+  const config = getEmailConfig(env);
+  if (!config) return null;
+
+  return {
+    ...config,
+    from: env.CONTACT_EMAIL_FROM || CONTACT_SENDER,
+    to: env.CONTACT_EMAIL_TO || CONTACT_EMAIL,
   };
 }
 
@@ -106,17 +119,42 @@ function formatDate(value) {
   return value instanceof Date ? value.toISOString() : new Date().toISOString();
 }
 
+function formatContactDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Stockholm",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZoneName: "shortOffset",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second} ${values.timeZoneName || "GMT+1"} (Europe/Stockholm)`;
+}
+
 export function buildContactEmail(contact) {
+  const reference = contact.reference || "Not provided";
+  const contactType = contact.contactType || contact.subject || "General inquiry";
   return {
-    subject: `New BlueMind Website Inquiry - ${contact.name}`,
+    subject: `Contact Us | ${contactType} | ${contact.name} | ${reference}`,
     text: [
+      "BlueMind Web Service - Contact Us",
+      "",
+      line("Reference", reference),
       line("Name", contact.name),
       line("Email", contact.email),
-      line("Phone", contact.phone),
+      line("Contact type", contactType),
       line("Company", contact.company),
-      line("Subject", contact.subject),
-      line("Message", contact.message),
-      line("Date", formatDate(contact.createdAt)),
+      line("Order number", contact.orderNumber),
+      "",
+      "Message:",
+      contact.message || "Not provided",
+      "",
+      `Submitted: ${formatContactDate(contact.createdAt)}`,
       "Source: BlueMind Web Service Contact Form",
     ].join("\n"),
   };
@@ -337,7 +375,7 @@ export function buildFormMailOptions(config, route, doc) {
 }
 
 export async function sendFormNotification(env, route, doc) {
-  const config = getEmailConfig(env);
+  const config = getFormEmailConfig(env);
   if (!config) {
     console.warn("Email notification skipped: Resend is not configured");
     return { sent: false, reason: "not_configured" };

@@ -1,5 +1,8 @@
+import { randomBytes } from "node:crypto";
+
 const MAX_FIELD_LENGTH = 4000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CONTACT_TYPES = new Set(["Company", "Freelancer", "Individual"]);
 
 export class ValidationError extends Error {
   constructor(fields) {
@@ -12,6 +15,15 @@ export class ValidationError extends Error {
 function cleanString(value, maxLength = MAX_FIELD_LENGTH) {
   if (typeof value !== "string") return "";
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function cleanMessage(value, maxLength = MAX_FIELD_LENGTH) {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
+    .trim()
+    .slice(0, maxLength);
 }
 
 function optional(value, maxLength) {
@@ -31,7 +43,13 @@ function requireEmail(fields, output, source) {
   output.email = email;
 }
 
-export function validateContactSubmission(body) {
+function createContactReference(date = new Date()) {
+  const stamp = date.toISOString().slice(0, 10).replace(/-/g, "");
+  const suffix = randomBytes(4).toString("hex").toUpperCase();
+  return `CNT-${stamp}-${suffix}`;
+}
+
+export function validateContactSubmission(body, { requireContactType = false } = {}) {
   const fields = {};
   const source = body && typeof body === "object" ? body : {};
   const doc = {};
@@ -40,11 +58,17 @@ export function validateContactSubmission(body) {
   requireEmail(fields, doc, source);
   doc.phone = optional(source.phone, 80);
   doc.company = optional(source.company, 180);
+  doc.contactType = optional(source.contactType, 80);
+  if (requireContactType && !CONTACT_TYPES.has(doc.contactType)) fields.contactType = "Please select a contact type.";
+  doc.orderNumber = optional(source.orderNumber, 100);
   doc.subject = optional(source.subject, 220);
-  requireText(fields, doc, source, "message", "message", { minLength: 3, maxLength: 4000, message: "Please enter your message." });
+  const message = cleanMessage(source.message, 4000);
+  if (!message || message.length < 3) fields.message = "Please enter your message.";
+  doc.message = message;
 
   if (Object.keys(fields).length) throw new ValidationError(fields);
-  return { ...doc, status: "new", createdAt: new Date(), updatedAt: new Date() };
+  const createdAt = new Date();
+  return { ...doc, reference: createContactReference(createdAt), status: "new", createdAt, updatedAt: new Date(createdAt) };
 }
 
 export function validateQuoteSubmission(body) {
