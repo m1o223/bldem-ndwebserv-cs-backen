@@ -62,7 +62,7 @@ import { listWorkspaceToolsForEmployee } from "./workspaceTools.js";
 import { createAiRoute } from "./ai/http.js";
 import { createAiConversationRoute, createAiConversationStore } from "./ai/conversations.js";
 import { createCustomerRoute } from "./customerAuth.js";
-import { handlePublicReviews } from "./publicReviews.js";
+import { handlePublicReviews, handleReviewVerificationSend } from "./publicReviews.js";
 
 const BODY_LIMIT_BYTES = 768 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -1435,6 +1435,7 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
     const route = url.pathname;
     const isFormRoute = route === "/api/contact" || route === "/api/quote";
     const isPublicReviewsRoute = route === "/api/reviews";
+    const isReviewVerificationRoute = route === "/api/reviews/verification/send";
     const isAdminRoute = route.startsWith("/api/admin/");
     const isWorkspaceRoute = route.startsWith("/api/workspace/") || route === "/api/employee/tools";
     const isStripeWebhookRoute = route === "/api/payments/stripe/webhook";
@@ -1452,11 +1453,16 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
       ? "GET, PATCH, OPTIONS"
       : isWorkspaceRoute
         ? "GET, POST, PATCH, OPTIONS"
-      : (isPublicReviewsRoute ? "GET, POST, PATCH, OPTIONS" : isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || route === "/api/care/stripe/checkout" || route === "/api/care/subscriptions/manage" || route === "/api/care/subscriptions/cancel" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
+      : (isPublicReviewsRoute ? "GET, POST, PATCH, OPTIONS" : isReviewVerificationRoute || isFormRoute || route === "/api/admin/login" || route === "/api/admin/logout" || route === "/api/admin/presence/heartbeat" || route === "/api/payments/stripe/checkout" || route === "/api/care/stripe/checkout" || route === "/api/care/subscriptions/manage" || route === "/api/care/subscriptions/cancel" || isStripeWebhookRoute || isEmailVerificationRoute ? "POST, OPTIONS" : "GET, OPTIONS");
 
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", allowedMethods);
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        isPublicReviewsRoute || isReviewVerificationRoute
+          ? "Content-Type, Authorization, X-Review-Guest-Token, X-Review-Idempotency-Key"
+          : "Content-Type",
+      );
       if (isAdminRoute || isWorkspaceRoute) res.setHeader("Access-Control-Allow-Credentials", "true");
       res.writeHead(204);
       return res.end();
@@ -1479,6 +1485,11 @@ export function createHealthServer(env = process.env, { ai = {} } = {}) {
       if (isPublicReviewsRoute) {
         if (["POST", "PATCH"].includes(req.method) && !checkReviewRateLimit(req)) return json(res, 429, { success: false, error: "Too many review changes. Please try again later." });
         return await handlePublicReviews(req, res, env, readJsonBody);
+      }
+
+      if (isReviewVerificationRoute) {
+        if (req.method === "POST" && !checkReviewRateLimit(req)) return json(res, 429, { success: false, error: "Too many review verification requests. Please try again later." });
+        return await handleReviewVerificationSend(req, res, env, readJsonBody);
       }
 
       if (route === "/api/pricing/packages") {
