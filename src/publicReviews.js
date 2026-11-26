@@ -95,7 +95,10 @@ async function ensureReviewIndexes(collection, db) {
   const initialization = Promise.all([
     collection.createIndex({ status: 1, createdAt: -1 }),
     collection.createIndex({ ownerType: 1, ownerId: 1, createdAt: -1 }),
-    collection.createIndex({ ownerType: 1, ownerId: 1, idempotencyKey: 1 }, { unique: true, sparse: true }),
+    collection.createIndex(
+      { ownerType: 1, ownerId: 1, idempotencyKey: 1 },
+      { unique: true, partialFilterExpression: { idempotencyKey: { $exists: true } } },
+    ),
   ]).catch(error => {
     reviewIndexInitialization.delete(db);
     throw error;
