@@ -162,7 +162,7 @@ export async function saveCustomerProfile(db, user, body) {
 export async function customerContact(db, user, body, env, notify = sendFormNotification) {
   if (!body || !customerTypes.includes(body.customerType ?? null) || typeof body.message !== "string" || body.message.length > 4000 || typeof body.name !== "string" || body.name.length > 160 || typeof body.email !== "string" || body.email.length > 254 || typeof body.orderNumber !== "string" || body.orderNumber.length > 100 || typeof body.companyName !== "string" || body.companyName.length > 180) return { status: 400, code: "invalid" };
   let doc;
-  try { doc = validateContactSubmission({ ...body, company: body.customerType === "company" ? body.companyName : "", subject: body.orderNumber ? `Customer enquiry: ${body.orderNumber}` : "Customer enquiry" }); }
+  try { doc = validateContactSubmission({ ...body, company: body.customerType === "company" ? body.companyName : "", subject: body.orderNumber ? `Customer enquiry: ${body.orderNumber}` : "Customer enquiry" }, { allowCustomSubject: true }); }
   catch { return { status: 400, code: "invalid" }; }
   doc = { ...doc, _id: randomUUID(), customerId: user.id, customerType: body.customerType ?? null, orderNumber: body.orderNumber, source: "customer-app" };
   await db.collection("contacts").insertOne(doc);

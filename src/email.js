@@ -138,16 +138,16 @@ function formatContactDate(value) {
 
 export function buildContactEmail(contact) {
   const reference = contact.reference || "Not provided";
-  const contactType = contact.contactType || contact.subject || "General inquiry";
+  const subject = contact.subject || "General Inquiry";
   return {
-    subject: `Contact Us | ${contactType} | ${contact.name} | ${reference}`,
+    subject: `Contact Us | ${subject} | ${contact.name} | ${reference}`,
     text: [
       "BlueMind Web Service - Contact Us",
       "",
       line("Reference", reference),
       line("Name", contact.name),
       line("Email", contact.email),
-      line("Contact type", contactType),
+      line("Subject", subject),
       line("Company", contact.company),
       line("Order number", contact.orderNumber),
       "",

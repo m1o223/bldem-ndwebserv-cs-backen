@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 
 const MAX_FIELD_LENGTH = 4000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const CONTACT_TYPES = new Set(["Company", "Freelancer", "Individual"]);
+const CONTACT_SUBJECTS = new Set(["General Inquiry", "Support", "Quote Request", "Partnership"]);
 
 export class ValidationError extends Error {
   constructor(fields) {
@@ -49,7 +49,7 @@ function createContactReference(date = new Date()) {
   return `CNT-${stamp}-${suffix}`;
 }
 
-export function validateContactSubmission(body, { requireContactType = false } = {}) {
+export function validateContactSubmission(body, { allowCustomSubject = false } = {}) {
   const fields = {};
   const source = body && typeof body === "object" ? body : {};
   const doc = {};
@@ -58,10 +58,9 @@ export function validateContactSubmission(body, { requireContactType = false } =
   requireEmail(fields, doc, source);
   doc.phone = optional(source.phone, 80);
   doc.company = optional(source.company, 180);
-  doc.contactType = optional(source.contactType, 80);
-  if (requireContactType && !CONTACT_TYPES.has(doc.contactType)) fields.contactType = "Please select a contact type.";
   doc.orderNumber = optional(source.orderNumber, 100);
   doc.subject = optional(source.subject, 220);
+  if (doc.subject && !CONTACT_SUBJECTS.has(doc.subject) && !allowCustomSubject) fields.subject = "Please select a valid subject.";
   const message = cleanMessage(source.message, 4000);
   if (!message || message.length < 3) fields.message = "Please enter your message.";
   doc.message = message;

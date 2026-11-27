@@ -28,7 +28,7 @@ test("contact and quote routes reject invalid submissions before storage", async
     const contactBody = await contact.json();
     assert.equal(contactBody.success, false);
     assert.equal(contactBody.fields.email, "Please enter a valid email address.");
-    assert.equal(contactBody.fields.contactType, "Please select a contact type.");
+    assert.equal(contactBody.fields.subject, undefined);
 
     const quote = await fetch(`${base}/api/quote`, {
       method: "POST",
@@ -59,6 +59,7 @@ test("validators trim and shape stored documents", () => {
   assert.equal(contact.name, "Ada");
   assert.equal(contact.email, "ada@example.com");
   assert.equal(contact.company, "BlueMind");
+  assert.equal(contact.subject, undefined);
   assert.equal(contact.reference.startsWith("CNT-"), true);
   assert.equal(contact.status, "new");
   assert.ok(contact.createdAt instanceof Date);
@@ -77,15 +78,15 @@ test("email notifications include inquiry details", () => {
     email: "ada@example.com",
     phone: "+1 555 0100",
     company: "Analytical Engines",
-    contactType: "Company",
+    subject: "Quote Request",
     orderNumber: "ORD-42",
     message: "Please contact me about a website.",
-  }, { requireContactType: true });
+  });
   const contactEmail = buildContactEmail(contact);
-  assert.equal(contactEmail.subject, `Contact Us | Company | Ada Lovelace | ${contact.reference}`);
+  assert.equal(contactEmail.subject, `Contact Us | Quote Request | Ada Lovelace | ${contact.reference}`);
   assert.match(contactEmail.text, /Name: Ada Lovelace/);
   assert.match(contactEmail.text, /Email: ada@example.com/);
-  assert.match(contactEmail.text, /Contact type: Company/);
+  assert.match(contactEmail.text, /Subject: Quote Request/);
   assert.match(contactEmail.text, /Order number: ORD-42/);
   assert.match(contactEmail.text, /Submitted: /);
   assert.match(contactEmail.text, /Source: BlueMind Web Service Contact Form/);
@@ -111,4 +112,10 @@ test("email notifications include inquiry details", () => {
   assert.equal(options.from, "BlueMind Web Service <notifications@xn--bluemndwebservice-gvc.com>");
   assert.equal(options.to, "admin@xn--bluemndwebservice-gvc.com");
   assert.equal(options.replyTo, "ada@example.com");
+});
+
+test("contact subject is optional but validated when provided", () => {
+  const withoutSubject = validateContactSubmission({ name: "Ada", email: "ada@example.com", message: "Hello" });
+  assert.equal(withoutSubject.subject, undefined);
+  assert.throws(() => validateContactSubmission({ name: "Ada", email: "ada@example.com", subject: "Company", message: "Hello" }), ValidationError);
 });

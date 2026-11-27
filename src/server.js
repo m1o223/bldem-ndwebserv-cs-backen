@@ -924,7 +924,7 @@ async function handleFormRoute(req, res, env, route) {
   const body = await readJsonBody(req);
   const collectionName = route === "/api/contact" ? "contacts" : "quoteRequests";
   const doc = route === "/api/contact"
-    ? validateContactSubmission(body, { requireContactType: true })
+    ? validateContactSubmission(body)
     : validateQuoteSubmission(body);
   const db = await getDatabase(env);
   await ensureCollections(db);
